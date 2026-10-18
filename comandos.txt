@@ -1,0 +1,6 @@
+EJECUTAR EL DASHBOARD
+
+python -m streamlit run app.py
+
+Se abre en http://localhost:8501
+

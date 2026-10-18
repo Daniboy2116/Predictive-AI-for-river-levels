@@ -1,0 +1,12 @@
+numpy
+pandas
+openpyxl
+scikit-learn
+joblib
+statsmodels
+pmdarima
+xgboost
+torch
+prophet
+streamlit
+plotly
