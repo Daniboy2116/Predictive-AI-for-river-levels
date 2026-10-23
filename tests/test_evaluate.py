@@ -32,6 +32,6 @@ def test_predecir_la_media_da_nse_cero():
 
 def test_mae_y_rmse_conocidos():
     """Errores de 1 y 3 m: MAE = 2 y RMSE = raíz de 5."""
-    metricas = calcular_metricas([0.0, 0.0], [1.0, -3.0])
+    metricas = calcular_metricas([1.0, -1.0], [2.0, -4.0])
     assert np.isclose(metricas["MAE"], 2.0)
     assert np.isclose(metricas["RMSE"], np.sqrt(5.0))
