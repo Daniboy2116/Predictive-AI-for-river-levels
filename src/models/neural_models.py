@@ -1,12 +1,14 @@
-"""Redes neuronales en PyTorch para predecir el nivel del día siguiente (t+1).
+"""Redes neuronales en PyTorch que pronostican los próximos 15 días de una sola vez.
 
 Arquitecturas:
-- LSTM: red recurrente que "recuerda" lo ocurrido en los días anteriores.
-- CNN 1D: filtros convolucionales que detectan patrones locales (Conv1D + MaxPooling1D).
-- Transformer: mecanismo de self-attention que pondera qué días pasados importan más.
+- LSTM: red recurrente que lee la ventana día a día y "recuerda" lo importante.
+- CNN 1D: convoluciones causales dilatadas (Bai et al., 2018) + MaxPooling1D: cada capa
+  mira más lejos en el pasado (1, 2, 4 días de separación) con pocos parámetros.
+- Transformer: self-attention; cada día de la ventana decide a qué otros días atender.
 
-Las tres reciben ventanas de 7 días con forma (muestras, 7 pasos, 1 variable) y
-devuelven un único valor: el nivel escalado del día siguiente.
+Las tres reciben ventanas de 60 días con 10 canales (nivel y anomalía de las cuatro
+estaciones + calendario) y devuelven 15 valores: el cambio escalado del nivel a
+1, 2, ..., 15 días.
 
 Ejecutar:  python -m src.models.neural_models
 """
@@ -18,16 +20,17 @@ import pandas as pd
 import torch
 from torch import nn
 
-from src.evaluate import evaluar_y_guardar
-from src.preprocessing import (
-    ESTACIONES, NUMERO_DE_LAGS, SEMILLA, cargar_datos, invertir_escala, preparar_estacion,
-)
+from src.configuracion import ESTACIONES_OBJETIVO, HORIZONTES, SEMILLA
+from src.evaluate import armar_predicciones, evaluar_y_guardar
+from src.preprocessing import cambio_a_nivel, cargar_datos, preparar_datos, preparar_ventanas
 
-# Hiperparámetros de entrenamiento comunes a las tres redes
-EPOCAS_MAXIMAS = 200     # vueltas completas máximas sobre los datos de entrenamiento
-TAMANO_LOTE = 32         # cuántas muestras se usan en cada actualización de pesos
+# Hiperparámetros comunes a las tres redes
+LONGITUD_VENTANA = 60    # días de historia que ve la red
+MAXIMO_HORIZONTE = 15    # la red predice los cambios a 1..15 días
+EPOCAS_MAXIMAS = 80      # vueltas completas máximas sobre los datos de entrenamiento
+TAMANO_LOTE = 64         # cuántas muestras se usan en cada actualización de pesos
 TASA_APRENDIZAJE = 0.001
-PACIENCIA = 20           # épocas sin mejorar en validación antes de detenerse
+PACIENCIA = 10           # épocas sin mejorar en validación antes de detenerse
 
 NOMBRES_REDES = ["LSTM", "CNN1D", "Transformer"]
 
@@ -41,98 +44,116 @@ NOMBRES_REDES = ["LSTM", "CNN1D", "Transformer"]
 class RedLSTM(nn.Module):
     """LSTM de 2 capas seguida de capas densas."""
 
-    def __init__(self):
+    def __init__(self, numero_canales: int, numero_salidas: int):
         super().__init__()
-        self.lstm = nn.LSTM(input_size=1, hidden_size=64, num_layers=2,
+        self.lstm = nn.LSTM(input_size=numero_canales, hidden_size=64, num_layers=2,
                             batch_first=True, dropout=0.1)
-        self.capa_densa = nn.Linear(64, 32)
+        self.capa_densa = nn.Linear(64, 64)
         self.activacion = nn.ReLU()
-        self.capa_salida = nn.Linear(32, 1)
+        self.capa_salida = nn.Linear(64, numero_salidas)
 
     def forward(self, x):
-        # x: (lote, 7 pasos, 1)
-        salidas_lstm, _ = self.lstm(x)              # (lote, 7, 64)
-        ultimo_paso = salidas_lstm[:, -1, :]        # nos quedamos con el último día: (lote, 64)
-        h = self.activacion(self.capa_densa(ultimo_paso))
-        y = self.capa_salida(h)                     # (lote, 1)
-        return y.view(-1)                           # (lote,)
+        # x: (lote, 60 días, 10 canales)
+        salidas_lstm, _ = self.lstm(x)              # (lote, 60, 64)
+        ultimo_dia = salidas_lstm[:, -1, :]         # estado tras leer el día t: (lote, 64)
+        h = self.activacion(self.capa_densa(ultimo_dia))
+        return self.capa_salida(h)                  # (lote, 15)
+
+
+class BloqueConvolucionCausal(nn.Module):
+    """Conv1D causal dilatada: la salida del día d solo mira los días d, d - dil, d - 2·dil."""
+
+    def __init__(self, canales_entrada: int, canales_salida: int, dilatacion: int):
+        super().__init__()
+        tamano_nucleo = 3
+        relleno_izquierdo = (tamano_nucleo - 1) * dilatacion
+        self.relleno = nn.ConstantPad1d((relleno_izquierdo, 0), 0.0)   # solo a la izquierda (pasado)
+        self.convolucion = nn.Conv1d(canales_entrada, canales_salida, kernel_size=tamano_nucleo,
+                                     dilation=dilatacion)
+        self.activacion = nn.ReLU()
+
+    def forward(self, x):
+        return self.activacion(self.convolucion(self.relleno(x)))
 
 
 class RedCNN1D(nn.Module):
-    """Dos capas Conv1D + MaxPooling1D seguidas de capas densas."""
+    """Tres convoluciones causales dilatadas (1, 2, 4) con MaxPooling1D y capas densas."""
 
-    def __init__(self):
+    def __init__(self, numero_canales: int, numero_salidas: int):
         super().__init__()
-        self.conv1 = nn.Conv1d(in_channels=1, out_channels=64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3, padding=1)
-        self.pooling = nn.MaxPool1d(kernel_size=2)  # 7 pasos -> 3 pasos
+        self.bloque1 = BloqueConvolucionCausal(numero_canales, 32, dilatacion=1)
+        self.bloque2 = BloqueConvolucionCausal(32, 32, dilatacion=2)
+        self.pooling1 = nn.MaxPool1d(kernel_size=2)          # 60 días -> 30
+        self.bloque3 = BloqueConvolucionCausal(32, 32, dilatacion=4)
+        self.pooling2 = nn.MaxPool1d(kernel_size=2)          # 30 -> 15
+        self.capa_densa = nn.Linear(32 * 15, 64)
         self.activacion = nn.ReLU()
-        self.capa_densa = nn.Linear(64 * 3, 32)
-        self.capa_salida = nn.Linear(32, 1)
+        self.capa_salida = nn.Linear(64, numero_salidas)
 
     def forward(self, x):
-        # Conv1d espera (lote, canales, pasos), así que intercambiamos los ejes 1 y 2
-        x = x.permute(0, 2, 1)                      # (lote, 1, 7)
-        h = self.activacion(self.conv1(x))          # (lote, 64, 7)
-        h = self.activacion(self.conv2(h))          # (lote, 64, 7)
-        h = self.pooling(h)                         # (lote, 64, 3)
-        h = h.reshape(h.shape[0], -1)               # aplanar: (lote, 192)
+        # Conv1d espera (lote, canales, días), así que intercambiamos los ejes 1 y 2
+        h = x.permute(0, 2, 1)                      # (lote, 10, 60)
+        h = self.bloque1(h)                         # (lote, 32, 60)
+        h = self.bloque2(h)                         # (lote, 32, 60)
+        h = self.pooling1(h)                        # (lote, 32, 30)
+        h = self.bloque3(h)                         # (lote, 32, 30)
+        h = self.pooling2(h)                        # (lote, 32, 15)
+        h = h.reshape(h.shape[0], -1)               # aplanar: (lote, 480)
         h = self.activacion(self.capa_densa(h))
-        y = self.capa_salida(h)
-        return y.view(-1)
+        return self.capa_salida(h)                  # (lote, 15)
 
 
 class RedTransformer(nn.Module):
-    """Encoder Transformer (self-attention) con posición aprendida para cada día."""
+    """Encoder Transformer (self-attention) con una posición aprendida para cada día."""
 
-    def __init__(self):
+    def __init__(self, numero_canales: int, numero_salidas: int):
         super().__init__()
         dimension = 32
-        self.embedding = nn.Linear(1, dimension)    # cada nivel -> vector de 32 números
+        self.embedding = nn.Linear(numero_canales, dimension)   # cada día -> vector de 32 números
         # Un vector aprendido por posición para que la red sepa qué día es cada dato
-        self.posicion = nn.Parameter(torch.zeros(1, NUMERO_DE_LAGS, dimension))
-        capa_encoder = nn.TransformerEncoderLayer(d_model=dimension, nhead=4,
-                                                  dim_feedforward=64, dropout=0.1,
-                                                  batch_first=True)
-        self.encoder = nn.TransformerEncoder(capa_encoder, num_layers=2)
-        self.capa_densa = nn.Linear(dimension, 32)
+        self.posicion = nn.Parameter(torch.zeros(1, LONGITUD_VENTANA, dimension))
+        capa_encoder = nn.TransformerEncoderLayer(d_model=dimension, nhead=4, dim_feedforward=64,
+                                                  dropout=0.1, batch_first=True)
+        self.encoder = nn.TransformerEncoder(capa_encoder, num_layers=2, enable_nested_tensor=False)
+        self.capa_densa = nn.Linear(dimension, 64)
         self.activacion = nn.ReLU()
-        self.capa_salida = nn.Linear(32, 1)
+        self.capa_salida = nn.Linear(64, numero_salidas)
 
     def forward(self, x):
-        h = self.embedding(x) + self.posicion       # (lote, 7, 32)
-        h = self.encoder(h)                         # (lote, 7, 32)
-        ultimo_paso = h[:, -1, :]                   # (lote, 32)
-        h = self.activacion(self.capa_densa(ultimo_paso))
-        y = self.capa_salida(h)
-        return y.view(-1)
+        h = self.embedding(x) + self.posicion       # (lote, 60, 32)
+        h = self.encoder(h)                         # (lote, 60, 32)
+        ultimo_dia = h[:, -1, :]                    # representación del día t: (lote, 32)
+        h = self.activacion(self.capa_densa(ultimo_dia))
+        return self.capa_salida(h)                  # (lote, 15)
 
 
-def lags_a_tensor(x_lags: pd.DataFrame) -> torch.Tensor:
-    """Convierte la tabla de lags en un tensor (muestras, 7 pasos, 1) en orden cronológico.
-
-    Las columnas vienen como lag_1 (ayer), lag_2, ..., lag_7 (hace una semana).
-    Las redes secuenciales deben leer del pasado al presente: lag_7, ..., lag_1.
-    """
-    columnas_cronologicas = []
-    for k in range(NUMERO_DE_LAGS, 0, -1):
-        columnas_cronologicas.append("lag_" + str(k))
-
-    matriz = x_lags[columnas_cronologicas].to_numpy(dtype=np.float32)
-    matriz = matriz.reshape(len(matriz), NUMERO_DE_LAGS, 1)
-    return torch.tensor(matriz)
+def crear_red(nombre_red: str, numero_canales: int, numero_salidas: int) -> nn.Module:
+    """Devuelve una red nueva según su nombre."""
+    if nombre_red == "LSTM":
+        return RedLSTM(numero_canales, numero_salidas)
+    if nombre_red == "CNN1D":
+        return RedCNN1D(numero_canales, numero_salidas)
+    if nombre_red == "Transformer":
+        return RedTransformer(numero_canales, numero_salidas)
+    raise ValueError("Red desconocida: " + nombre_red)
 
 
-def ejecutar_red_neuronal(df: pd.DataFrame, estacion: str, nombre_red: str) -> dict:
-    """Entrena y evalúa una red neuronal (LSTM, CNN1D o Transformer) para una estación.
+def predecir_por_lotes(modelo: nn.Module, ventanas: torch.Tensor) -> np.ndarray:
+    """Predice en lotes grandes (sin calcular gradientes) para no agotar la memoria."""
+    modelo.eval()
+    partes = []
+    with torch.no_grad():
+        for inicio in range(0, len(ventanas), 1024):
+            partes.append(modelo(ventanas[inicio:inicio + 1024]).numpy())
+    return np.concatenate(partes)
 
-    Args:
-        df: DataFrame completo devuelto por ``cargar_datos``.
-        estacion: nombre de la estación.
-        nombre_red: ``"LSTM"``, ``"CNN1D"`` o ``"Transformer"``.
+
+def ejecutar_red_neuronal(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str,
+                          nombre_red: str) -> dict:
+    """Entrena y evalúa una red (LSTM, CNN1D o Transformer) para una estación.
 
     Returns:
-        Diccionario con las métricas (RMSE, MAE, R2) en metros.
+        Métricas de prueba por horizonte (ver ``evaluar_y_guardar``).
     """
     # Semillas fijas: misma inicialización de pesos y mismo orden de lotes en cada ejecución
     random.seed(SEMILLA)
@@ -140,26 +161,20 @@ def ejecutar_red_neuronal(df: pd.DataFrame, estacion: str, nombre_red: str) -> d
     torch.manual_seed(SEMILLA)
 
     # === PASO 1: PREPARACIÓN DE DATOS ===
-    # [JUSTIFICACIÓN]: PyTorch trabaja con tensores, no con DataFrames. Además las redes
-    # secuenciales esperan 3 dimensiones: (muestras, pasos de tiempo, variables).
-    datos = preparar_estacion(df, estacion)
-    x_train = lags_a_tensor(datos["x_train"])
-    y_train = torch.tensor(datos["y_train"].to_numpy(dtype=np.float32))
-    x_val = lags_a_tensor(datos["x_val"])
-    y_val = torch.tensor(datos["y_val"].to_numpy(dtype=np.float32))
-    x_test = lags_a_tensor(datos["x_test"])
+    # [JUSTIFICACIÓN]: las redes secuenciales no usan la tabla de 79 variables, sino la
+    # historia "en bruto": tensores de 3 dimensiones (muestras, días, canales). Y en vez
+    # de un modelo por horizonte, una sola red predice los 15 cambios a la vez.
+    datos = preparar_ventanas(niveles, observados, estacion, LONGITUD_VENTANA, MAXIMO_HORIZONTE)
+    ventanas = torch.tensor(datos["ventanas"])
+    objetivos = torch.tensor(datos["cambios_escalados"])
+    x_train = ventanas[datos["en_train"]]
+    y_train = objetivos[datos["en_train"]]
+    x_val = ventanas[datos["en_val"]]
+    y_val = objetivos[datos["en_val"]]
 
     # === PASO 2: DEFINICIÓN DEL MODELO ===
-    if nombre_red == "LSTM":
-        modelo = RedLSTM()
-    elif nombre_red == "CNN1D":
-        modelo = RedCNN1D()
-    elif nombre_red == "Transformer":
-        modelo = RedTransformer()
-    else:
-        raise ValueError("Red desconocida: " + nombre_red)
-
-    funcion_perdida = nn.MSELoss()   # error cuadrático medio
+    modelo = crear_red(nombre_red, ventanas.shape[2], MAXIMO_HORIZONTE)
+    funcion_perdida = nn.MSELoss()   # error cuadrático medio (sobre los 15 horizontes)
     optimizador = torch.optim.Adam(modelo.parameters(), lr=TASA_APRENDIZAJE)
 
     # === PASO 3: ENTRENAMIENTO ===
@@ -167,35 +182,32 @@ def ejecutar_red_neuronal(df: pd.DataFrame, estacion: str, nombre_red: str) -> d
     # entrenamiento se escribe a mano con un bucle de épocas:
     #   1. Se recorren los datos de train en lotes pequeños y se actualizan los pesos.
     #   2. Al final de cada época se mide el error en validación.
-    #   3. Se guardan los mejores pesos y se para si no mejora en PACIENCIA épocas
-    #      ("early stopping").
+    #   3. Se guardan los mejores pesos y se para si no mejora en PACIENCIA épocas.
     # Barajamos el orden de las VENTANAS (no la serie): cada ventana ya contiene sus
-    # 7 días en orden, así que no se rompe la cronología ni hay fuga de información.
+    # 60 días en orden, así que no se rompe la cronología ni hay fuga de información.
     generador = torch.Generator().manual_seed(SEMILLA)
     numero_muestras = len(x_train)
     mejor_perdida_val = float("inf")
     mejores_pesos = copy.deepcopy(modelo.state_dict())
     epocas_sin_mejora = 0
+    epocas_usadas = 0
 
     for epoca in range(EPOCAS_MAXIMAS):
+        epocas_usadas = epoca + 1
         # 3.1) Entrenar una época completa, lote a lote
         modelo.train()
         orden_aleatorio = torch.randperm(numero_muestras, generator=generador)
         for inicio in range(0, numero_muestras, TAMANO_LOTE):
             indices_lote = orden_aleatorio[inicio:inicio + TAMANO_LOTE]
-            x_lote = x_train[indices_lote]
-            y_lote = y_train[indices_lote]
-
-            optimizador.zero_grad()                  # borrar gradientes anteriores
-            y_pred_lote = modelo(x_lote)             # predicción
-            perdida = funcion_perdida(y_pred_lote, y_lote)
-            perdida.backward()                       # calcular gradientes
-            optimizador.step()                       # actualizar pesos
+            optimizador.zero_grad()                              # borrar gradientes anteriores
+            prediccion_lote = modelo(x_train[indices_lote])      # predicción
+            perdida = funcion_perdida(prediccion_lote, y_train[indices_lote])
+            perdida.backward()                                   # calcular gradientes
+            optimizador.step()                                   # actualizar pesos
 
         # 3.2) Medir el error en validación (sin actualizar pesos)
-        modelo.eval()
-        with torch.no_grad():
-            perdida_val = funcion_perdida(modelo(x_val), y_val).item()
+        prediccion_val = torch.tensor(predecir_por_lotes(modelo, x_val))
+        perdida_val = funcion_perdida(prediccion_val, y_val).item()
 
         # 3.3) Early stopping
         if perdida_val < mejor_perdida_val:
@@ -208,24 +220,38 @@ def ejecutar_red_neuronal(df: pd.DataFrame, estacion: str, nombre_red: str) -> d
                 break
 
     modelo.load_state_dict(mejores_pesos)   # nos quedamos con la mejor época
+    print(estacion.ljust(15), nombre_red.ljust(12), "épocas:", epocas_usadas,
+          "| MSE validación (escalado): %.4f" % mejor_perdida_val, flush=True)
 
     # === PASO 4: PREDICCIÓN E INVERSIÓN DE ESCALA ===
-    modelo.eval()
-    with torch.no_grad():
-        y_pred_escalado = modelo(x_test).numpy()
-    y_pred = invertir_escala(datos["escalador"], y_pred_escalado)
-    y_real = datos["y_test_metros"]
+    # Se predice para todos los días de emisión; luego cada horizonte toma su columna.
+    cambios_escalados = predecir_por_lotes(modelo, ventanas)
+    cambios_metros = datos["escalador_objetivo"].inverse_transform(cambios_escalados)
+    cambios_metros = pd.DataFrame(cambios_metros, index=datos["origenes"], columns=range(1, MAXIMO_HORIZONTE + 1))
 
-    metricas = evaluar_y_guardar(estacion, nombre_red, datos["fechas_test"], y_real, y_pred)
-    return metricas
+    predicciones_val = []
+    predicciones_test = []
+    for horizonte in HORIZONTES:
+        tablas = preparar_datos(niveles, observados, estacion, horizonte)
+        for conjunto in ["val", "test"]:
+            tabla = tablas["tabla_" + conjunto]
+            cambio_predicho = cambios_metros.loc[tabla.index, horizonte].to_numpy()
+            nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)
+            resultado = armar_predicciones(tabla, nivel_predicho, estacion, nombre_red, horizonte)
+            if conjunto == "val":
+                predicciones_val.append(resultado)
+            else:
+                predicciones_test.append(resultado)
+
+    return evaluar_y_guardar(estacion, nombre_red, pd.concat(predicciones_val), pd.concat(predicciones_test))
 
 
 def ejecutar() -> None:
-    """Entrena y evalúa las tres redes en todas las estaciones."""
-    df = cargar_datos()
-    for estacion in ESTACIONES:
+    """Entrena y evalúa las tres redes en todas las estaciones objetivo."""
+    niveles, observados = cargar_datos()
+    for estacion in ESTACIONES_OBJETIVO:
         for nombre_red in NOMBRES_REDES:
-            ejecutar_red_neuronal(df, estacion, nombre_red)
+            ejecutar_red_neuronal(niveles, observados, estacion, nombre_red)
 
 
 if __name__ == "__main__":
