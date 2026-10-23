@@ -10,8 +10,8 @@ import streamlit as st
 from src.configuracion import (
     CAMBIOS_DE_REFERENCIA, ESTACIONES, HORIZONTE_PRINCIPAL, NOMBRES_ESTACIONES, UMBRALES_ALERTA,
 )
-from src.contribucion import cargar_contribucion
-from src.evaluate import cargar_metricas, cargar_predicciones
+from src.contribucion import RUTA_CONTRIBUCION, cargar_contribucion
+from src.evaluate import RUTA_METRICAS, RUTA_PREDICCIONES, cargar_metricas, cargar_predicciones
 from src.preprocessing import leer_excel, revisar_calidad
 
 COLORES_MODELOS = {
@@ -43,8 +43,23 @@ section[data-testid="stSidebar"] { background: rgba(10, 22, 40, .9); border-righ
 # --------------------------------------------------------------------------
 # Carga de datos (se guarda en caché para no leer los archivos en cada clic)
 # --------------------------------------------------------------------------
-def leer_resultados() -> tuple:
-    """Lee predicciones de prueba, métricas y contribución de variables desde ``outputs/``."""
+def fechas_de_modificacion() -> tuple:
+    """Fecha de última modificación de cada archivo de resultados (0 si no existe)."""
+    fechas = []
+    for ruta in [RUTA_PREDICCIONES, RUTA_METRICAS, RUTA_CONTRIBUCION]:
+        if ruta.exists():
+            fechas.append(ruta.stat().st_mtime)
+        else:
+            fechas.append(0.0)
+    return tuple(fechas)
+
+
+def leer_resultados(fechas: tuple) -> tuple:
+    """Lee predicciones de prueba, métricas y contribución de variables desde ``outputs/``.
+
+    El argumento ``fechas`` no se usa dentro de la función: sirve para que la caché se
+    renueve sola cuando ``main.py`` vuelve a escribir los archivos.
+    """
     return cargar_predicciones("prueba"), cargar_metricas(), cargar_contribucion()
 
 
@@ -92,7 +107,7 @@ st.markdown('<div class="titulo"><h1>🌊 Pronóstico del nivel del Orinoco</h1>
             '<p>Pronóstico directo a h días con estaciones aguas arriba · prueba 2020-2025 · '
             'entrenamiento 1974-2014 · validación 2015-2019</p></div>', unsafe_allow_html=True)
 
-predicciones, metricas, contribucion = leer_resultados_en_cache()
+predicciones, metricas, contribucion = leer_resultados_en_cache(fechas_de_modificacion())
 if predicciones.empty:
     st.warning("No hay resultados todavía. Ejecuta primero: `python main.py`")
     st.stop()

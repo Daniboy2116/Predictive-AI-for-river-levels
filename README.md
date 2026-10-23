@@ -8,11 +8,34 @@ modelos estadísticos, ensamblados de árboles, redes neuronales y un ensamble a
 > propiedades del análisis exploratorio (`Nivel_Orinoco_Analisis_y_Modelos.pdf`). Los resultados de abajo
 > son sobre esos datos simulados y solo sirven para validar el flujo.
 
+## Resultados con los datos simulados (MAE a 15 días, prueba 2020–2025)
+
+| Modelo | Ciudad Bolívar | Palúa | Mejora vs. persistencia (CB) |
+|--------|---------------:|------:|-----------------------------:|
+| Persistencia | 126,0 cm | 91,8 cm | — |
+| Climatología armónica | 128,2 cm | 113,2 cm | −2 % |
+| Anomalía amortiguada | 51,7 cm | 38,8 cm | 59 % |
+| SARIMAX | 48,1 cm | 31,4 cm | 62 % |
+| Random Forest | 38,7 cm | 29,3 cm | 69 % |
+| XGBoost | 37,5 cm | 28,4 cm | 70 % |
+| LightGBM | 37,1 cm | 28,5 cm | 71 % |
+| Prophet | 34,7 cm | 27,3 cm | 72 % |
+| Transformer | 33,6 cm | 27,3 cm | 73 % |
+| CNN 1D | 33,1 cm | 27,3 cm | 74 % |
+| LSTM | 33,0 cm | 27,3 cm | 74 % |
+| Ridge | 31,0 cm | **24,1 cm** | 75 % |
+| **Ensamble** | **30,9 cm** | 24,6 cm | **75 %** |
+
+Las líneas base son muy parecidas a las del PDF (persistencia 109/82 cm, anomalía amortiguada 55/48 cm).
+Con estos datos simulados, que son casi lineales por construcción, Ridge es tan bueno como los modelos
+complejos; con los datos reales el orden puede cambiar (en el PDF, LightGBM supera ligeramente a Ridge).
+Quitar las otras estaciones empeora el MAE de Ridge de 31,2 a 36,9 cm: la mayor ganancia está aguas arriba.
+
 ## Inicio rápido
 
 ```bash
 pip install -r requirements.txt
-python main.py                      # datos, control de calidad, todos los modelos (~30-40 min en CPU)
+python main.py                      # datos, control de calidad, todos los modelos (~30 min en CPU)
 python -m streamlit run app.py      # dashboard en http://localhost:8501
 python -m pytest                    # pruebas (fugas de información, split, métricas)
 ```
