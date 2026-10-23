@@ -1,7 +1,8 @@
 """Métricas de evaluación y guardado de resultados.
 
 Archivos generados (niveles siempre en metros, escala original):
-- ``outputs/predictions.csv``            -> predicciones de PRUEBA (2020-2025).
+- ``outputs/predictions.csv``            -> predicciones de PRUEBA (2020-2025) y el pronóstico
+  operativo desde el último dato (``Real`` vacío y ``Observado = False``).
 - ``outputs/predicciones_validacion.csv`` -> predicciones de VALIDACIÓN (2015-2019), para el ensamble.
   Ambos con columnas ``Fecha, Estacion, Modelo, Horizonte, Real, Prediccion, Observado``
   (``Fecha`` es la fecha objetivo t + h).
@@ -17,7 +18,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from src.configuracion import CARPETA_SALIDA
+from src.configuracion import CARPETA_SALIDA, HORIZONTES_RESUMEN
 
 RUTA_METRICAS = CARPETA_SALIDA / "metrics.json"
 RUTA_PREDICCIONES = CARPETA_SALIDA / "predictions.csv"
@@ -133,10 +134,11 @@ def evaluar_y_guardar(estacion: str, nombre_modelo: str, predicciones_val: pd.Da
     _reemplazar_en_csv(RUTA_PREDICCIONES, predicciones_test)
     _reemplazar_en_csv(RUTA_PREDICCIONES_VALIDACION, predicciones_val)
 
-    # Resumen: MAE en centímetros por horizonte
+    # Resumen: MAE en centímetros en algunos horizontes
     partes = []
     for horizonte, metricas in metricas_por_horizonte.items():
-        partes.append("h" + str(horizonte) + " " + ("%.1f" % (100 * metricas["MAE"])))
+        if horizonte in HORIZONTES_RESUMEN:
+            partes.append("h" + str(horizonte) + " " + ("%.1f" % (100 * metricas["MAE"])))
     print(estacion.ljust(15), nombre_modelo.ljust(22), "MAE (cm):", " | ".join(partes), flush=True)
     return metricas_por_horizonte
 

@@ -79,7 +79,7 @@ def ejecutar_prophet(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
 
         # === PASO 4: PREDICCIÓN (YA EN METROS) ===
         # [JUSTIFICACIÓN]: no hay que invertir ninguna escala porque Prophet se entrenó en metros.
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             tabla = datos["tabla_" + conjunto]
             prediccion = modelo.predict(tabla_prophet(tabla).drop(columns=["y"]))
             nivel_predicho = prediccion["yhat"].to_numpy()   # "yhat" es la predicción central

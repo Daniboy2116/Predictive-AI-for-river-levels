@@ -51,7 +51,9 @@ pytest.ini
 1. **Preprocesamiento:** fecha → `datetime` como índice con frecuencia diaria; corregir los cambios de referencia
    declarados en la configuración; imputar con `interpolate(method="time")` pero **evaluar solo en días observados**.
 2. **Pronóstico directo:** ŷ(t+h) = y(t) + f(x(t)). El modelo aprende el **cambio** y(t+h) − y(t) usando solo
-   información disponible hasta el día t. Horizontes evaluados: 1, 3, 5, 7, 10 y 15 días (principal: 15).
+   información disponible hasta el día t. Se pronostica y evalúa cada horizonte de 1 a 15 días (principal: 15).
+   Desde el último dato disponible se emite además el **pronóstico operativo** de los próximos 15 días
+   (se guarda en `predictions.csv` con `Real` vacío y `Observado = False`; no entra en las métricas).
 3. **Variables (79):** cíclicas (seno/coseno k = 1..3 del día del año en t+h y cambio climatológico esperado),
    rezagos y(t−L) con L ∈ {0, 1, 2, 3, 5, 7, 10, 15, 20, 30}, tendencias Δw = y(t) − y(t−w) con
    w ∈ {1, 3, 7, 15, 30}, medias móviles de 7 y 30 días y anomalía. Rezagos, tendencias y suavizado se calculan
@@ -65,7 +67,9 @@ pytest.ini
    Prophet; ensamble apilado.
 6. **Evaluación:** métricas sobre prueba en metros: MAE, RMSE, NSE (Nash-Sutcliffe) y mejora del MAE respecto a la
    persistencia. Guardar `outputs/predictions.csv` y `outputs/metrics.json`.
-7. **App:** Streamlit, selector de estación y horizonte en sidebar, checkboxes de modelos, gráfica Plotly Real vs
+7. **App:** Streamlit, selector de estación y horizonte en sidebar, checkboxes de modelos. Pestaña
+   "Pronóstico por día": se elige cualquier fecha de emisión (prueba o último dato) y cuántos días ver (1-15)
+   y se muestra la trayectoria de cada modelo junto al nivel observado. Además: gráfica Plotly Real vs
    Predicciones con umbral de alerta, tabla de métricas y curva de error por horizonte.
 8. **Código educativo:** imports normales al inicio del archivo (sin importaciones perezosas, `try/except ImportError`
    ni *fallbacks*), sin decoradores ni sintaxis hipercompacta. Cada modelo sigue 4 pasos marcados con encabezados

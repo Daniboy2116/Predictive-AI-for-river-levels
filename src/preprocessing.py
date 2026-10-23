@@ -281,6 +281,7 @@ def construir_tabla(niveles: pd.DataFrame, observados: pd.DataFrame, climatologi
 
     Returns:
         DataFrame indexado por la fecha de emisión t con las variables y ``COLUMNAS_META``.
+        En los últimos h días ``nivel_objetivo`` y ``cambio`` son NaN (aún no ocurrieron).
     """
     fechas = niveles.index
     fechas_objetivo = fechas + pd.Timedelta(days=horizonte)
@@ -318,8 +319,9 @@ def construir_tabla(niveles: pd.DataFrame, observados: pd.DataFrame, climatologi
     # evaluación sea honesta, solo cuentan las filas con y(t) e y(t + h) observados.
     tabla["observado"] = observado_objetivo & observado_objetivo.shift(-horizonte, fill_value=False)
 
-    # Se pierden los primeros 30 días (sin historia) y los últimos h (sin objetivo)
-    tabla = tabla.dropna()
+    # Se pierden los primeros 30 días (sin historia completa). Los últimos h días se
+    # conservan aunque todavía no tengan objetivo: son el pronóstico operativo (futuro).
+    tabla = tabla.dropna(subset=nombres_variables(tabla))
     return tabla
 
 
@@ -370,16 +372,22 @@ def preparar_datos(niveles: pd.DataFrame, observados: pd.DataFrame, estacion_obj
 
     Returns:
         Diccionario con:
-            - ``x_train``, ``x_val``, ``x_test``: variables ESCALADAS (Z-Score ajustado con train).
-            - ``y_train``, ``y_val``, ``y_test``: cambio y(t + h) - y(t) en metros.
-            - ``tabla_train``, ``tabla_val``, ``tabla_test``: tablas completas sin escalar
+            - ``x_train``, ``x_val``, ``x_test``, ``x_futuro``: variables ESCALADAS (Z-Score ajustado con train).
+            - ``y_train``, ``y_val``, ``y_test``, ``y_futuro``: cambio y(t + h) - y(t) en metros
+              (``y_futuro`` es NaN: son los días que todavía no han ocurrido).
+            - ``tabla_train``, ``tabla_val``, ``tabla_test``, ``tabla_futuro``: tablas completas sin escalar
               (incluyen ``nivel_actual``, ``nivel_objetivo``, ``observado`` y ``fecha_objetivo``).
             - ``escalador``, ``variables``, ``climatologias``, ``estacion``, ``horizonte``.
+
+        ``futuro`` contiene los últimos h días de emisión: su fecha objetivo cae después del
+        último dato, así que sirven para el pronóstico operativo pero no para evaluar.
     """
     climatologias = ajustar_climatologias(niveles, observados)
     tabla = construir_tabla(niveles, observados, climatologias, estacion_objetivo, horizonte)
     variables = nombres_variables(tabla)
-    tabla_train, tabla_val, tabla_test = dividir_por_fecha(tabla)
+    sin_objetivo = tabla["nivel_objetivo"].isna()
+    tabla_futuro = tabla[sin_objetivo]
+    tabla_train, tabla_val, tabla_test = dividir_por_fecha(tabla[~sin_objetivo])
 
     # Escalado Z-Score ajustado SOLO con train (evita data leakage)
     escalador = StandardScaler()
@@ -397,8 +405,10 @@ def preparar_datos(niveles: pd.DataFrame, observados: pd.DataFrame, estacion_obj
         "tabla_train": tabla_train,
         "tabla_val": tabla_val,
         "tabla_test": tabla_test,
+        "tabla_futuro": tabla_futuro,
     }
-    for nombre, tabla_conjunto in [("train", tabla_train), ("val", tabla_val), ("test", tabla_test)]:
+    conjuntos = [("train", tabla_train), ("val", tabla_val), ("test", tabla_test), ("futuro", tabla_futuro)]
+    for nombre, tabla_conjunto in conjuntos:
         valores_escalados = escalador.transform(tabla_conjunto[variables])
         datos["x_" + nombre] = pd.DataFrame(valores_escalados, index=tabla_conjunto.index, columns=variables)
         datos["y_" + nombre] = tabla_conjunto["cambio"]

@@ -59,7 +59,9 @@ VECINAS_CONTROL = {
 # --------------------------------------------------------------------------
 SEMILLA = 42                        # semilla fija para resultados reproducibles
 HORIZONTE_PRINCIPAL = 15            # días de anticipación del pronóstico
-HORIZONTES = [1, 3, 5, 7, 10, 15]   # horizontes que se evalúan
+HORIZONTE_MAXIMO = 15               # se pronostica cada día desde t+1 hasta t+15
+HORIZONTES = list(range(1, HORIZONTE_MAXIMO + 1))   # 1, 2, ..., 15: todos se evalúan y se guardan
+HORIZONTES_RESUMEN = [1, 3, 5, 7, 10, 15]           # los que se imprimen en consola
 
 # Partición cronológica según la FECHA OBJETIVO (t + h)
 FECHA_FIN_TRAIN = "2014-12-31"      # train: 1974-2014

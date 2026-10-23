@@ -60,6 +60,8 @@ def ejecutar_ensamble(estacion: str) -> dict:
             if es_modelo and modelo in ancha_test.columns:
                 modelos_base.append(modelo)
 
+        # Solo se combinan fechas en las que todos los modelos base tienen predicción
+        ancha_test = ancha_test.dropna(subset=modelos_base + ["Persistencia"])
         nivel_hoy_val = ancha_val["Persistencia"]
         nivel_hoy_test = ancha_test["Persistencia"]
         x_val = ancha_val[modelos_base].sub(nivel_hoy_val, axis=0)

@@ -49,12 +49,17 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
         if nombre != estacion:
             otras_estaciones.append(nombre)
             nombres_exogenas.append(nombre + "_t-" + str(REZAGO_EXOGENAS))
-    exogenas = anomalias[otras_estaciones].shift(REZAGO_EXOGENAS)
-    exogenas.columns = nombres_exogenas
+    # Las exógenas se extienden 15 días más allá del último dato: como están rezagadas
+    # 15 días, para pronosticar del día t+1 al t+15 solo hacen falta datos hasta t.
+    ultimo_dia = niveles.index[-1]
+    fechas_extendidas = pd.date_range(niveles.index[0], ultimo_dia + pd.Timedelta(days=REZAGO_EXOGENAS), freq="D")
+    exogenas_extendidas = anomalias[otras_estaciones].reindex(fechas_extendidas).shift(REZAGO_EXOGENAS)
+    exogenas_extendidas.columns = nombres_exogenas
 
     # Los primeros días no tienen exógenas (no hay datos 15 días antes): se descartan
     anomalia_objetivo = anomalias[estacion].iloc[REZAGO_EXOGENAS:]
-    exogenas = exogenas.iloc[REZAGO_EXOGENAS:]
+    exogenas_extendidas = exogenas_extendidas.iloc[REZAGO_EXOGENAS:]
+    exogenas = exogenas_extendidas.loc[:ultimo_dia]
     en_train = anomalia_objetivo.index <= pd.Timestamp(FECHA_FIN_TRAIN)
 
     # Prueba de Dickey-Fuller aumentada: p < 0.05 indica serie estacionaria (no hace falta diferenciar)
@@ -101,18 +106,22 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
         tablas_por_horizonte[horizonte] = datos
         origenes.update(datos["tabla_val"].index)
         origenes.update(datos["tabla_test"].index)
+        origenes.update(datos["tabla_futuro"].index)
 
     maximo_horizonte = max(HORIZONTES)
     ultima_posicion = len(anomalia_objetivo) - 1
     pronosticos = {}
     for origen in sorted(origenes):
         posicion = anomalia_objetivo.index.get_loc(origen)
-        # Al final de la serie no hay 15 días por delante; esos pasos nunca se evalúan
-        fin = min(posicion + maximo_horizonte, ultima_posicion)
-        prediccion = modelo_serie_completa.get_prediction(start=posicion + 1, end=fin, dynamic=0)
-        valores = np.full(maximo_horizonte, np.nan)
-        valores[:fin - posicion] = prediccion.predicted_mean.to_numpy()
-        pronosticos[origen] = valores
+        fin = posicion + maximo_horizonte
+        if fin <= ultima_posicion:
+            prediccion = modelo_serie_completa.get_prediction(start=posicion + 1, end=fin, dynamic=0)
+        else:
+            # Pronóstico operativo: los días posteriores al último dato necesitan sus exógenas
+            exogenas_futuras = exogenas_extendidas.iloc[ultima_posicion + 1:fin + 1]
+            prediccion = modelo_serie_completa.get_prediction(start=posicion + 1, end=fin, dynamic=0,
+                                                              exog=exogenas_futuras)
+        pronosticos[origen] = prediccion.predicted_mean.to_numpy()
     pronosticos = pd.DataFrame.from_dict(pronosticos, orient="index", columns=range(1, maximo_horizonte + 1))
 
     # Inversión: nivel(t + h) = climatología(t + h) + anomalía pronosticada
@@ -120,7 +129,7 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
     predicciones_test = []
     for horizonte in HORIZONTES:
         datos = tablas_por_horizonte[horizonte]
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             tabla = datos["tabla_" + conjunto]
             anomalia_predicha = pronosticos.loc[tabla.index, horizonte].to_numpy()
             fechas_objetivo = pd.DatetimeIndex(tabla["fecha_objetivo"])

@@ -51,7 +51,7 @@ def ejecutar_ridge(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: st
 
         # === PASO 4: PREDICCIÓN E INVERSIÓN DE ESCALA ===
         # El modelo predice el cambio en metros; el nivel es y(t) + cambio.
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             cambio_predicho = modelo.predict(datos["x_" + conjunto])
             tabla = datos["tabla_" + conjunto]
             nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)

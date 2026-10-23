@@ -8,6 +8,14 @@ modelos estadísticos, ensamblados de árboles, redes neuronales y un ensamble a
 > propiedades del análisis exploratorio (`Nivel_Orinoco_Analisis_y_Modelos.pdf`). Los resultados de abajo
 > son sobre esos datos simulados y solo sirven para validar el flujo.
 
+## Qué ofrece
+
+- **Pronóstico de cualquier día hasta 15 días:** en el dashboard (pestaña *Pronóstico por día*) se elige una
+  fecha de emisión y cuántos días ver (1 a 15) y aparece la trayectoria de cada modelo junto al nivel observado.
+  Con la fecha más reciente se ve el **pronóstico operativo**: los 15 días siguientes al último dato.
+- **Evaluación honesta por horizonte:** MAE, RMSE y NSE para cada horizonte de 1 a 15 días en 2020–2025.
+- **Comparación de 13 modelos** y análisis de qué variables aportan más.
+
 ## Resultados con los datos simulados (MAE a 15 días, prueba 2020–2025)
 
 | Modelo | Ciudad Bolívar | Palúa | Mejora vs. persistencia (CB) |

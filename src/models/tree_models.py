@@ -26,8 +26,8 @@ from src.preprocessing import cambio_a_nivel, cargar_datos, preparar_datos
 
 def guardar_conjunto(modelo, datos: dict, estacion: str, nombre_modelo: str, horizonte: int,
                      predicciones_val: list, predicciones_test: list) -> None:
-    """PASO 4 común: predice validación y prueba, reconstruye el nivel y lo añade a las listas."""
-    for conjunto in ["val", "test"]:
+    """PASO 4 común: predice validación, prueba y futuro, reconstruye el nivel y lo añade a las listas."""
+    for conjunto in ["val", "test", "futuro"]:
         cambio_predicho = modelo.predict(datos["x_" + conjunto])
         tabla = datos["tabla_" + conjunto]
         nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)

@@ -283,7 +283,7 @@ def ejecutar_red_neuronal(niveles: pd.DataFrame, observados: pd.DataFrame, estac
     predicciones_test = []
     for horizonte in HORIZONTES:
         tablas = preparar_datos(niveles, observados, estacion, horizonte)
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             tabla = tablas["tabla_" + conjunto]
             cambio_predicho = cambios_metros.loc[tabla.index, horizonte].to_numpy()
             nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)

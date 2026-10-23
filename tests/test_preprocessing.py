@@ -129,3 +129,20 @@ def test_ventanas_terminan_en_el_dia_de_emision():
     ultimo_origen_train = datos["origenes"][datos["en_train"]].max()
     assert ultimo_origen_train + pd.Timedelta(days=15) <= pd.Timestamp(FECHA_FIN_TRAIN)
     assert not (datos["en_train"] & datos["en_val"]).any()
+
+
+def test_pronostico_operativo_futuro():
+    """Los últimos h días de emisión quedan en 'futuro': variables completas y objetivo desconocido."""
+    ultimo_dia = NIVELES.index.max()
+    for horizonte in [1, 7, 15]:
+        datos = preparar_datos(NIVELES, OBSERVADOS, "Ciudad_Bolivar", horizonte)
+        futuro = datos["tabla_futuro"]
+        assert len(futuro) == horizonte
+        assert futuro.index.max() == ultimo_dia
+        assert (futuro["fecha_objetivo"] > ultimo_dia).all()
+        assert futuro["nivel_objetivo"].isna().all()
+        assert not futuro["observado"].any()
+        assert not datos["x_futuro"].isna().any().any()
+        # Prueba sigue teniendo objetivo real en todas sus filas
+        assert datos["tabla_test"]["nivel_objetivo"].notna().all()
+        assert datos["tabla_test"]["fecha_objetivo"].max() == ultimo_dia

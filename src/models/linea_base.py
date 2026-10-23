@@ -32,7 +32,7 @@ def ejecutar_persistencia(niveles: pd.DataFrame, observados: pd.DataFrame, estac
         # [JUSTIFICACIÓN]: la persistencia no tiene parámetros, no hay nada que entrenar.
 
         # === PASO 4: PREDICCIÓN (YA EN METROS) ===
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             tabla = datos["tabla_" + conjunto]
             cambio_predicho = np.zeros(len(tabla))
             nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)
@@ -62,7 +62,7 @@ def ejecutar_climatologia(niveles: pd.DataFrame, observados: pd.DataFrame, estac
         # (regresión armónica con K = 2); aquí solo se usa.
 
         # === PASO 4: PREDICCIÓN (YA EN METROS) ===
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             tabla = datos["tabla_" + conjunto]
             cambio_predicho = tabla["climatologia_cambio_esperado"] - tabla[columna_anomalia]
             nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)
@@ -95,7 +95,7 @@ def ejecutar_anomalia_amortiguada(niveles: pd.DataFrame, observados: pd.DataFram
         phi = float((anomalia_hoy * anomalia_futura).sum() / (anomalia_hoy ** 2).sum())
 
         # === PASO 4: PREDICCIÓN (YA EN METROS) ===
-        for conjunto in ["val", "test"]:
+        for conjunto in ["val", "test", "futuro"]:
             tabla = datos["tabla_" + conjunto]
             cambio_predicho = tabla["climatologia_cambio_esperado"] - (1.0 - phi) * tabla[columna_anomalia]
             nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)

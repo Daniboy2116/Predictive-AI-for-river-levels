@@ -8,11 +8,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.configuracion import (
-    CAMBIOS_DE_REFERENCIA, ESTACIONES, HORIZONTE_PRINCIPAL, NOMBRES_ESTACIONES, UMBRALES_ALERTA,
+    CAMBIOS_DE_REFERENCIA, ESTACIONES, HORIZONTE_MAXIMO, HORIZONTE_PRINCIPAL, NOMBRES_ESTACIONES, UMBRALES_ALERTA,
 )
 from src.contribucion import RUTA_CONTRIBUCION, cargar_contribucion
 from src.evaluate import RUTA_METRICAS, RUTA_PREDICCIONES, cargar_metricas, cargar_predicciones
-from src.preprocessing import leer_excel, revisar_calidad
+from src.preprocessing import cargar_datos, leer_excel, revisar_calidad
 
 COLORES_MODELOS = {
     "Persistencia": "#94a3b8", "Climatologia": "#64748b", "AnomaliaAmortiguada": "#cbd5e1",
@@ -60,7 +60,15 @@ def leer_resultados(fechas: tuple) -> tuple:
     El argumento ``fechas`` no se usa dentro de la función: sirve para que la caché se
     renueve sola cuando ``main.py`` vuelve a escribir los archivos.
     """
-    return cargar_predicciones("prueba"), cargar_metricas(), cargar_contribucion()
+    predicciones = cargar_predicciones("prueba")
+    # Fecha de emisión = fecha objetivo - horizonte (el día en que se hizo el pronóstico)
+    predicciones["FechaEmision"] = predicciones["Fecha"] - pd.to_timedelta(predicciones["Horizonte"], unit="D")
+    return predicciones, cargar_metricas(), cargar_contribucion()
+
+
+def leer_niveles() -> tuple:
+    """Niveles corregidos e imputados y máscara de días observados (misma referencia que las predicciones)."""
+    return cargar_datos()
 
 
 def leer_datos_y_calidad() -> tuple:
@@ -73,6 +81,7 @@ def leer_datos_y_calidad() -> tuple:
 # función normal para mantener el estilo del proyecto (sin decoradores).
 leer_resultados_en_cache = st.cache_data(leer_resultados)
 leer_datos_y_calidad_en_cache = st.cache_data(leer_datos_y_calidad)
+leer_niveles_en_cache = st.cache_data(leer_niveles)
 
 
 def tarjeta(columna, etiqueta: str, valor: str, detalle: str) -> None:
@@ -160,8 +169,83 @@ tarjeta(columna3, "Mejora vs. persistencia", "%.0f %%" % mejor["Mejora_vs_persis
 tarjeta(columna4, "NSE del mejor", "%.3f" % mejor["NSE"], "1 = perfecto · 0 = media")
 st.write("")
 
-pestana_pronostico, pestana_metricas, pestana_horizonte, pestana_variables, pestana_datos = st.tabs(
-    ["Pronóstico", "Métricas", "Error por horizonte", "Contribución de variables", "Datos y calidad"])
+pestanas = st.tabs(["Pronóstico por día", "Serie a h días", "Métricas", "Error por horizonte",
+                    "Contribución de variables", "Datos y calidad"])
+pestana_dia = pestanas[0]
+pestana_pronostico = pestanas[1]
+pestana_metricas = pestanas[2]
+pestana_horizonte = pestanas[3]
+pestana_variables = pestanas[4]
+pestana_datos = pestanas[5]
+
+# ----------------------------------------------------------------- Pronóstico por día
+with pestana_dia:
+    todas_de_la_estacion = predicciones[predicciones["Estacion"] == estacion]
+    # Primera emisión con los 15 días dentro de prueba y última emisión (último dato disponible)
+    primera_emision = todas_de_la_estacion.loc[todas_de_la_estacion["Horizonte"] == 1, "FechaEmision"].min()
+    ultima_emision = todas_de_la_estacion["FechaEmision"].max()
+
+    columna_fecha, columna_dias = st.columns(2)
+    fecha_elegida = columna_fecha.date_input(
+        "Fecha de emisión (día en que se hace el pronóstico)", value=ultima_emision.date(),
+        min_value=primera_emision.date(), max_value=ultima_emision.date(), format="DD/MM/YYYY", key="fecha_emision")
+    dias_a_pronosticar = columna_dias.slider("Días a pronosticar", min_value=1, max_value=HORIZONTE_MAXIMO,
+                                             value=HORIZONTE_MAXIMO, key="dias_a_pronosticar")
+    fecha_emision = pd.Timestamp(fecha_elegida)
+    fecha_final = fecha_emision + pd.Timedelta(days=dias_a_pronosticar)
+
+    del_dia = todas_de_la_estacion[(todas_de_la_estacion["FechaEmision"] == fecha_emision) &
+                                   (todas_de_la_estacion["Horizonte"] <= dias_a_pronosticar)]
+    niveles, observados = leer_niveles_en_cache()
+    nivel_observado = niveles[estacion].where(observados[estacion])
+    historia = nivel_observado.loc[fecha_emision - pd.Timedelta(days=45):fecha_emision].dropna()
+    despues = nivel_observado.loc[fecha_emision + pd.Timedelta(days=1):fecha_final].dropna()
+    nivel_del_dia = niveles.loc[fecha_emision, estacion]
+
+    figura = go.Figure()
+    figura.add_trace(go.Scatter(x=historia.index, y=historia.to_numpy(), name="Observado hasta la emisión",
+                                mode="lines", line=dict(color="#e2e8f0", width=2.5)))
+    if not despues.empty:
+        figura.add_trace(go.Scatter(x=despues.index, y=despues.to_numpy(), name="Observado después (real)",
+                                    mode="lines+markers", line=dict(color="#e2e8f0", width=2, dash="dash")))
+    for modelo in seleccionados:
+        del_modelo = del_dia[del_dia["Modelo"] == modelo].sort_values("Horizonte")
+        # La trayectoria arranca en el nivel del día de emisión para que se vea continua
+        fechas_trayectoria = [fecha_emision] + list(del_modelo["Fecha"])
+        niveles_trayectoria = [nivel_del_dia] + list(del_modelo["Prediccion"])
+        figura.add_trace(go.Scatter(x=fechas_trayectoria, y=niveles_trayectoria, name=modelo, mode="lines+markers",
+                                    marker=dict(size=5), line=dict(color=COLORES_MODELOS.get(modelo), width=1.8)))
+    figura.add_vline(x=fecha_emision, line=dict(color="#94a3b8", dash="dot"))
+    figura.add_annotation(x=fecha_emision, y=1.0, yref="paper", text="Emisión", showarrow=False,
+                          font=dict(color="#94a3b8"), xanchor="left")
+    if estacion in UMBRALES_ALERTA:
+        figura.add_hline(y=UMBRALES_ALERTA[estacion], line=dict(color="#ef4444", dash="dash"),
+                         annotation_text="Umbral de alerta %.1f m" % UMBRALES_ALERTA[estacion])
+    titulo = ("Pronóstico emitido el " + fecha_emision.strftime("%d-%m-%Y") + " para los próximos " +
+              str(dias_a_pronosticar) + " días — " + nombre_estacion(estacion))
+    estilo_grafica(figura, titulo, "Nivel (m)", altura=520)
+    st.plotly_chart(figura, theme=None)
+
+    if fecha_final > nivel_observado.dropna().index.max():
+        st.info("Pronóstico operativo: todavía no hay nivel observado para todos estos días.")
+
+    # Tabla: una fila por día pronosticado y una columna por modelo
+    if del_dia.empty or len(seleccionados) == 0:
+        st.info("Selecciona al menos un modelo en la barra lateral.")
+    else:
+        tabla_dia = del_dia[del_dia["Modelo"].isin(seleccionados)]
+        tabla_dia = tabla_dia.pivot(index="Fecha", columns="Modelo", values="Prediccion")
+        tabla_dia.insert(0, "Día", range(1, len(tabla_dia) + 1))
+        tabla_dia["Observado"] = nivel_observado.reindex(tabla_dia.index)
+        tabla_dia.index = tabla_dia.index.strftime("%d-%m-%Y")
+        tabla_dia.index.name = "Fecha"
+        formato = {}
+        for columna in tabla_dia.columns:
+            if columna != "Día":
+                formato[columna] = "{:.2f}"
+        st.dataframe(tabla_dia.style.format(formato, na_rep="—"))
+        st.caption("Niveles en metros. 'Día' = días de anticipación. 'Observado' queda vacío si ese día "
+                   "todavía no ha ocurrido o no tuvo medición.")
 
 # ----------------------------------------------------------------- Pronóstico
 with pestana_pronostico:
