@@ -4,9 +4,12 @@ openpyxl
 scikit-learn
 joblib
 statsmodels
-pmdarima
 xgboost
 torch
 prophet
 streamlit
 plotly
+matplotlib
+ipykernel
+nbconvert
+nbformat

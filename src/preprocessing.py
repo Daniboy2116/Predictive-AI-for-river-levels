@@ -1,164 +1,184 @@
-"""Preprocesamiento de series temporales de niveles de ríos.
+"""Preprocesamiento de las series de niveles de ríos (PASO 1 común a todos los modelos).
 
-Flujo (sin *data leakage*):
-1. Cargar Excel, fijar ``Fecha`` como índice ``DatetimeIndex`` diario.
-2. Imputar NaN con interpolación temporal lineal.
-3. Dividir cronológicamente la serie cruda en 70/15/15.
-4. Ajustar el escalador SOLO con train y transformar toda la serie.
-5. Construir lags t-1..t-n y separar X/y por partición.
+Flujo, en este orden (para evitar *data leakage*):
+1. Cargar el Excel y usar ``Fecha`` como índice diario.
+2. Rellenar los valores faltantes con interpolación temporal.
+3. Dividir la serie cronológicamente: 70% train, 15% val, 15% test.
+4. Ajustar el escalador Min-Max SOLO con train y transformar toda la serie.
+5. Crear las columnas de retardos (lags) t-1 ... t-7 y separar X / y.
 """
-from __future__ import annotations
-
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = ROOT / "data" / "datos_rios.xlsx"
-SCALER_DIR = ROOT / "outputs" / "scalers"
-STATIONS = ["Palua", "Orinoco", "Caicara", "Ciudad_Bolivar", "Ayacucho"]
-SEED = 42
+# --------------------------------------------------------------------------
+# Configuración general del proyecto
+# --------------------------------------------------------------------------
+CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
+RUTA_DATOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
+CARPETA_ESCALADORES = CARPETA_PROYECTO / "outputs" / "scalers"
 
-ScalerType = Literal["minmax", "zscore"]
-
-
-def load_data(path: Path | str = DATA_PATH, date_col: str = "Fecha") -> pd.DataFrame:
-    """Carga el Excel y devuelve un DataFrame indexado por fecha (frecuencia diaria)."""
-    df = pd.read_excel(path)
-    df[date_col] = pd.to_datetime(df[date_col])
-    df = df.set_index(date_col).sort_index()
-    df = df[~df.index.duplicated(keep="first")].asfreq("D")
-    return df.apply(pd.to_numeric, errors="coerce")
+ESTACIONES = ["Palua", "Orinoco", "Caicara", "Ciudad_Bolivar", "Ayacucho"]
+SEMILLA = 42            # semilla fija para que los resultados sean reproducibles
+NUMERO_DE_LAGS = 7      # usamos los niveles de los 7 días anteriores
+PORCENTAJE_TRAIN = 0.70
+PORCENTAJE_VAL = 0.15   # el 15% restante es test
 
 
-def impute(df: pd.DataFrame) -> pd.DataFrame:
-    """Interpolación lineal temporal; rellena extremos con el valor válido más cercano."""
-    return df.interpolate(method="time", limit_direction="both").ffill().bfill()
+def cargar_datos(ruta: Path = RUTA_DATOS) -> pd.DataFrame:
+    """Lee el Excel y devuelve un DataFrame diario, indexado por fecha y sin NaN.
+
+    Args:
+        ruta: ruta al archivo Excel con la columna ``Fecha`` y una columna por estación.
+
+    Returns:
+        DataFrame con índice de fechas (frecuencia diaria) y niveles en metros.
+    """
+    df = pd.read_excel(ruta)
+
+    # La columna Fecha pasa a ser el índice (tipo datetime)
+    df["Fecha"] = pd.to_datetime(df["Fecha"])
+    df = df.set_index("Fecha")
+    df = df.sort_index()
+
+    # Eliminamos fechas repetidas y forzamos frecuencia diaria
+    # (si falta algún día, aparece como una fila con NaN)
+    fechas_repetidas = df.index.duplicated(keep="first")
+    df = df[~fechas_repetidas]
+    df = df.asfreq("D")
+
+    # Rellenamos los huecos interpolando según la distancia en el tiempo.
+    # limit_direction="both" también rellena posibles NaN al principio o al final.
+    df = df.interpolate(method="time", limit_direction="both")
+    return df
 
 
-def split_indices(n: int, train: float = 0.70, val: float = 0.15) -> tuple[int, int]:
-    """Devuelve los índices de corte (fin_train, fin_val) para un split cronológico."""
-    i_train = int(n * train)
-    i_val = int(n * (train + val))
-    return i_train, i_val
+def crear_lags(serie: pd.Series, numero_de_lags: int = NUMERO_DE_LAGS) -> pd.DataFrame:
+    """Convierte una serie en una tabla supervisada: ``objetivo`` + ``lag_1`` ... ``lag_n``.
+
+    Ejemplo: para el día t, ``lag_1`` es el nivel de t-1, ``lag_2`` el de t-2, etc.
+    El ``objetivo`` es el nivel del propio día t (lo que queremos predecir).
+
+    Args:
+        serie: serie temporal (puede estar escalada).
+        numero_de_lags: cuántos días anteriores usar como entradas.
+
+    Returns:
+        DataFrame sin filas incompletas (se pierden los primeros ``numero_de_lags`` días).
+    """
+    tabla = pd.DataFrame(index=serie.index)
+    tabla["objetivo"] = serie
+
+    for k in range(1, numero_de_lags + 1):
+        tabla["lag_" + str(k)] = serie.shift(k)
+
+    tabla = tabla.dropna()
+    return tabla
 
 
-def make_lag_features(series: pd.Series, n_lags: int = 7) -> pd.DataFrame:
-    """Transforma una serie en problema supervisado con columnas lag_1..lag_n y target."""
-    frame = pd.DataFrame({"target": series})
-    for k in range(1, n_lags + 1):
-        frame[f"lag_{k}"] = series.shift(k)
-    return frame.dropna()
+def preparar_estacion(df: pd.DataFrame, estacion: str) -> dict:
+    """Prepara los datos de una estación para entrenar cualquier modelo.
+
+    Args:
+        df: DataFrame devuelto por :func:`cargar_datos`.
+        estacion: nombre de la columna de la estación (ej. ``"Palua"``).
+
+    Returns:
+        Diccionario con:
+            - ``serie``: serie completa en metros (sin escalar).
+            - ``escalador``: MinMaxScaler ajustado solo con train.
+            - ``x_train``, ``y_train``, ``x_val``, ``y_val``, ``x_test``, ``y_test``:
+              lags y objetivo ESCALADOS (valores entre ~0 y 1).
+            - ``fechas_test``: fechas del conjunto de prueba.
+            - ``y_test_metros``: valores reales de test en metros (para evaluar).
+            - ``fecha_fin_train``, ``fecha_fin_val``: fechas de corte del split.
+    """
+    serie = df[estacion]
+
+    # --- 1) Puntos de corte cronológicos 70 / 15 / 15 (NUNCA aleatorio) ---
+    total_dias = len(serie)
+    indice_fin_train = int(total_dias * PORCENTAJE_TRAIN)
+    indice_fin_val = int(total_dias * (PORCENTAJE_TRAIN + PORCENTAJE_VAL))
+    fecha_fin_train = serie.index[indice_fin_train - 1]
+    fecha_fin_val = serie.index[indice_fin_val - 1]
+
+    # --- 2) Escalado Min-Max ajustado SOLO con train (evita data leakage) ---
+    valores_train = serie.iloc[:indice_fin_train].to_numpy().reshape(-1, 1)
+    escalador = MinMaxScaler()
+    escalador.fit(valores_train)
+
+    valores_escalados = escalador.transform(serie.to_numpy().reshape(-1, 1))
+    serie_escalada = pd.Series(valores_escalados.ravel(), index=serie.index)
+
+    # Guardamos el escalador para poder desnormalizar más tarde (por ejemplo en la app)
+    CARPETA_ESCALADORES.mkdir(parents=True, exist_ok=True)
+    joblib.dump(escalador, CARPETA_ESCALADORES / (estacion + "_minmax.joblib"))
+
+    # --- 3) Tabla supervisada con lags ---
+    tabla = crear_lags(serie_escalada)
+    columnas_lags = []
+    for k in range(1, NUMERO_DE_LAGS + 1):
+        columnas_lags.append("lag_" + str(k))
+
+    # --- 4) Separar train / val / test según las fechas de corte ---
+    tabla_train = tabla[tabla.index <= fecha_fin_train]
+    tabla_val = tabla[(tabla.index > fecha_fin_train) & (tabla.index <= fecha_fin_val)]
+    tabla_test = tabla[tabla.index > fecha_fin_val]
+
+    datos = {
+        "estacion": estacion,
+        "serie": serie,
+        "escalador": escalador,
+        "x_train": tabla_train[columnas_lags],
+        "y_train": tabla_train["objetivo"],
+        "x_val": tabla_val[columnas_lags],
+        "y_val": tabla_val["objetivo"],
+        "x_test": tabla_test[columnas_lags],
+        "y_test": tabla_test["objetivo"],
+        "fechas_test": tabla_test.index,
+        "y_test_metros": serie.loc[tabla_test.index].to_numpy(),
+        "fecha_fin_train": fecha_fin_train,
+        "fecha_fin_val": fecha_fin_val,
+    }
+    return datos
 
 
-def _build_scaler(kind: ScalerType) -> MinMaxScaler | StandardScaler:
-    """Crea el escalador solicitado."""
-    if kind == "minmax":
-        return MinMaxScaler()
-    if kind == "zscore":
-        return StandardScaler()
-    raise ValueError(f"Escalador desconocido: {kind!r} (use 'minmax' o 'zscore')")
+def invertir_escala(escalador: MinMaxScaler, valores_escalados) -> np.ndarray:
+    """Convierte valores escalados (0-1) de vuelta a metros.
 
+    Args:
+        escalador: el MinMaxScaler usado en :func:`preparar_estacion`.
+        valores_escalados: array o lista con predicciones escaladas.
 
-@dataclass
-class StationData:
-    """Contenedor de datos preparados para una estación."""
-
-    station: str
-    raw: pd.Series                      # serie imputada en escala original
-    scaler: MinMaxScaler | StandardScaler
-    X_train: pd.DataFrame
-    y_train: pd.Series
-    X_val: pd.DataFrame
-    y_val: pd.Series
-    X_test: pd.DataFrame
-    y_test: pd.Series
-    lag_cols: list[str] = field(default_factory=list)
-
-    def inverse(self, values: np.ndarray | pd.Series) -> np.ndarray:
-        """Desnormaliza valores a la escala original (metros)."""
-        arr = np.asarray(values, dtype=float).reshape(-1, 1)
-        return self.scaler.inverse_transform(arr).ravel()
-
-    @property
-    def raw_train(self) -> pd.Series:
-        """Serie original de entrenamiento (para ARIMA/Prophet)."""
-        return self.raw.loc[: self.y_train.index[-1]]
-
-    @property
-    def raw_val(self) -> pd.Series:
-        return self.raw.loc[self.y_val.index]
-
-    @property
-    def raw_test(self) -> pd.Series:
-        return self.raw.loc[self.y_test.index]
-
-
-def prepare_station(
-    df: pd.DataFrame,
-    station: str,
-    n_lags: int = 7,
-    scaler_type: ScalerType = "minmax",
-    save_scaler: bool = True,
-) -> StationData:
-    """Prepara una estación: imputación, split 70/15/15, escalado (fit en train) y lags."""
-    if station not in df.columns:
-        raise KeyError(f"Estación {station!r} no encontrada. Disponibles: {list(df.columns)}")
-    series = impute(df[[station]])[station]
-
-    i_train, i_val = split_indices(len(series))
-    scaler = _build_scaler(scaler_type)
-    scaler.fit(series.iloc[:i_train].to_frame())  # SOLO train
-    scaled = pd.Series(
-        scaler.transform(series.to_frame()).ravel(), index=series.index, name=station
-    )
-
-    sup = make_lag_features(scaled, n_lags)
-    lag_cols = [f"lag_{k}" for k in range(1, n_lags + 1)]
-    train_end, val_end = series.index[i_train - 1], series.index[i_val - 1]
-    tr = sup.loc[:train_end]
-    va = sup.loc[train_end + pd.Timedelta(days=1) : val_end]
-    te = sup.loc[val_end + pd.Timedelta(days=1) :]
-
-    if save_scaler:
-        SCALER_DIR.mkdir(parents=True, exist_ok=True)
-        joblib.dump(scaler, SCALER_DIR / f"{station}_{scaler_type}.joblib")
-
-    return StationData(
-        station=station, raw=series, scaler=scaler,
-        X_train=tr[lag_cols], y_train=tr["target"],
-        X_val=va[lag_cols], y_val=va["target"],
-        X_test=te[lag_cols], y_test=te["target"],
-        lag_cols=lag_cols,
-    )
-
-
-def load_scaler(station: str, scaler_type: ScalerType = "minmax"):
-    """Carga un escalador previamente guardado."""
-    return joblib.load(SCALER_DIR / f"{station}_{scaler_type}.joblib")
-
-
-def make_sequences(X: pd.DataFrame) -> np.ndarray:
-    """Convierte lags (lag_1..lag_n) en tensores (muestras, pasos, 1) en orden cronológico."""
-    return X.iloc[:, ::-1].to_numpy(dtype=np.float32)[..., np.newaxis]
+    Returns:
+        Array 1D con los valores en metros.
+    """
+    valores_2d = np.asarray(valores_escalados, dtype=float).reshape(-1, 1)
+    valores_metros = escalador.inverse_transform(valores_2d)
+    return valores_metros.ravel()
 
 
 if __name__ == "__main__":
-    data = load_data()
-    print(f"Datos: {data.shape}, NaN totales: {int(data.isna().sum().sum())}")
-    for st in STATIONS:
-        d = prepare_station(data, st)
-        assert d.y_train.index.max() < d.y_val.index.min() < d.y_test.index.min()
-        assert not d.X_train.isna().any().any()
-        rec = d.inverse(d.y_test.values[:3])
-        assert np.allclose(rec, d.raw_test.values[:3])
+    # Prueba rápida del módulo: python -m src.preprocessing
+    df = cargar_datos()
+    print("Datos cargados:", df.shape, "| NaN restantes:", int(df.isna().sum().sum()))
+
+    for estacion in ESTACIONES:
+        datos = preparar_estacion(df, estacion)
+
+        # Comprobaciones: el orden temporal se respeta y la escala se invierte bien
+        assert datos["y_train"].index.max() < datos["y_val"].index.min()
+        assert datos["y_val"].index.max() < datos["y_test"].index.min()
+        recuperado = invertir_escala(datos["escalador"], datos["y_test"].to_numpy())
+        assert np.allclose(recuperado, datos["y_test_metros"])
+
         print(
-            f"{st:15s} train={len(d.y_train)} val={len(d.y_val)} test={len(d.y_test)} "
-            f"| test: {d.y_test.index.min().date()} → {d.y_test.index.max().date()}"
+            estacion.ljust(15),
+            "train =", len(datos["y_train"]),
+            "val =", len(datos["y_val"]),
+            "test =", len(datos["y_test"]),
         )
-    print("Preprocesamiento validado ✔")
+    print("Preprocesamiento validado correctamente.")

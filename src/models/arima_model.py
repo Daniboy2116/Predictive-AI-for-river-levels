@@ -1,86 +1,102 @@
-"""Modelo estadístico ARIMA sobre la serie original (metros, sin escalar).
+"""Modelo estadístico ARIMA sobre la serie original (en metros, sin escalar).
 
-Estrategia:
-1. Selección de orden (p, d, q) por AIC usando SOLO train
-   (``pmdarima.auto_arima`` si está disponible; si no, búsqueda en rejilla con statsmodels).
-2. Reajuste de parámetros con train + val.
-3. Predicción a 1 día vista sobre test: se aplican los parámetros fijos a la serie
-   completa y se obtienen las predicciones one-step-ahead del filtro de Kalman
-   (cada predicción usa solo observaciones hasta t-1, sin reentrenar).
+ARIMA(p, d, q) predice el nivel de mañana combinando:
+- p: cuántos niveles pasados se usan (parte autorregresiva, AR),
+- d: cuántas veces se diferencia la serie para quitar la tendencia (I),
+- q: cuántos errores pasados se usan (media móvil, MA).
+
+Ejecutar:  python -m src.models.arima_model
 """
-from __future__ import annotations
-
-import itertools
 import warnings
 
 import numpy as np
 import pandas as pd
+from statsmodels.tsa.arima.model import ARIMA
 
-from src.evaluate import evaluate_and_save
-from src.preprocessing import STATIONS, StationData, load_data, prepare_station
+from src.evaluate import evaluar_y_guardar
+from src.preprocessing import ESTACIONES, cargar_datos, preparar_estacion
 
-MODEL_NAME = "ARIMA"
-
-
-def _import_arima():
-    """Importación perezosa de statsmodels."""
-    try:
-        from statsmodels.tsa.arima.model import ARIMA
-    except ImportError as exc:  # pragma: no cover
-        raise ImportError("Falta 'statsmodels'. Instálalo con: pip install statsmodels") from exc
-    return ARIMA
+# Valores de p y q que se prueban al buscar el mejor modelo (d se deja fijo en 1)
+VALORES_P = [0, 1, 2, 3]
+VALORES_Q = [0, 1, 2]
+VALOR_D = 1
 
 
-def select_order(train: pd.Series, max_p: int = 3, max_q: int = 2,
-                 d: int = 1) -> tuple[int, int, int]:
-    """Selecciona (p, d, q) minimizando AIC sobre train."""
-    try:
-        import pmdarima as pm  # opcional
-        model = pm.auto_arima(train, d=d, max_p=max_p, max_q=max_q, seasonal=False,
-                              stepwise=True, suppress_warnings=True, error_action="ignore")
-        return tuple(model.order)  # type: ignore[return-value]
-    except ImportError:
-        pass
-    ARIMA = _import_arima()
-    best, best_aic = (1, d, 0), np.inf
-    for p, q in itertools.product(range(max_p + 1), range(max_q + 1)):
-        if p == q == 0:
-            continue
-        try:
-            aic = ARIMA(train, order=(p, d, q)).fit().aic
-        except Exception:  # noqa: BLE001 - órdenes no convergentes
-            continue
-        if aic < best_aic:
-            best, best_aic = (p, d, q), aic
-    return best
+def ejecutar_arima(df: pd.DataFrame, estacion: str) -> dict:
+    """Busca el mejor orden ARIMA, lo entrena y evalúa para una estación.
+
+    Args:
+        df: DataFrame completo devuelto por ``cargar_datos``.
+        estacion: nombre de la estación.
+
+    Returns:
+        Diccionario con las métricas (RMSE, MAE, R2) en metros.
+    """
+    # statsmodels avisa a menudo de problemas de convergencia en órdenes de prueba;
+    # los silenciamos para que la salida sea legible.
+    warnings.filterwarnings("ignore")
+
+    # === PASO 1: PREPARACIÓN DE DATOS ===
+    # [JUSTIFICACIÓN]: ARIMA no usa una matriz X de lags ni un vector y. Trabaja
+    # directamente sobre la serie temporal completa y en metros (sin escalar),
+    # porque el propio modelo calcula internamente sus "lags". Solo tomamos de
+    # preparar_estacion las fechas de corte para respetar el split 70/15/15.
+    datos = preparar_estacion(df, estacion)
+    serie_completa = datos["serie"]
+    serie_train = serie_completa[serie_completa.index <= datos["fecha_fin_train"]]
+    serie_train_val = serie_completa[serie_completa.index <= datos["fecha_fin_val"]]
+    fechas_test = datos["fechas_test"]
+
+    # === PASO 2: DEFINICIÓN / CONFIGURACIÓN DEL MODELO ===
+    # [JUSTIFICACIÓN]: en ARIMA "definir el modelo" significa elegir el orden (p, d, q).
+    # Probamos varias combinaciones SOLO con train y nos quedamos con la de menor AIC
+    # (criterio que premia el buen ajuste y penaliza la complejidad).
+    mejor_orden = (1, VALOR_D, 0)
+    mejor_aic = float("inf")
+    for p in VALORES_P:
+        for q in VALORES_Q:
+            if p == 0 and q == 0:
+                continue  # un modelo sin parte AR ni MA no tiene sentido aquí
+            orden = (p, VALOR_D, q)
+            # [JUSTIFICACIÓN]: con algunos órdenes el cálculo interno de ARIMA es
+            # numéricamente inestable y lanza un error. Ese candidato simplemente
+            # se descarta y se sigue probando el resto (no es un "fallback" de librería).
+            try:
+                resultado_prueba = ARIMA(serie_train, order=orden).fit()
+            except (np.linalg.LinAlgError, ValueError):
+                print(estacion.ljust(15), "orden", orden, "descartado (no converge)")
+                continue
+            if resultado_prueba.aic < mejor_aic:
+                mejor_aic = resultado_prueba.aic
+                mejor_orden = orden
+    print(estacion.ljust(15), "orden ARIMA elegido:", mejor_orden)
+
+    modelo = ARIMA(serie_train_val, order=mejor_orden)
+
+    # === PASO 3: ENTRENAMIENTO ===
+    # Una vez elegido el orden, se reajustan los parámetros con train + val.
+    modelo_entrenado = modelo.fit()
+
+    # === PASO 4: PREDICCIÓN (YA EN METROS) ===
+    # [JUSTIFICACIÓN]: no hay que invertir ninguna escala porque ARIMA se entrenó en metros.
+    # Para predecir a 1 día vista en test, aplicamos los MISMOS parámetros a la serie
+    # completa: así cada predicción del día t usa solo los datos reales hasta t-1
+    # (sin volver a entrenar).
+    modelo_serie_completa = modelo_entrenado.apply(serie_completa)
+    prediccion = modelo_serie_completa.get_prediction(start=fechas_test[0], end=fechas_test[-1])
+    y_pred = prediccion.predicted_mean.to_numpy()
+    y_real = datos["y_test_metros"]
+
+    metricas = evaluar_y_guardar(estacion, "ARIMA", fechas_test, y_real, y_pred)
+    return metricas
 
 
-def predict_one_step(d: StationData, order: tuple[int, int, int] | None = None
-                     ) -> tuple[np.ndarray, tuple[int, int, int]]:
-    """Ajusta ARIMA y devuelve predicciones t+1 sobre test (metros) y el orden usado."""
-    ARIMA = _import_arima()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        order = order or select_order(d.raw_train)
-        fit_series = d.raw.loc[: d.y_val.index[-1]]          # train + val
-        res = ARIMA(fit_series, order=order).fit()
-        full = res.apply(d.raw)                              # mismos parámetros, serie completa
-        pred = full.get_prediction(start=d.y_test.index[0], end=d.y_test.index[-1])
-    return pred.predicted_mean.to_numpy(), order
-
-
-def run(stations: list[str] | None = None) -> dict[str, dict[str, float]]:
-    """Entrena y evalúa ARIMA para cada estación; guarda resultados en outputs/."""
-    df = load_data()
-    results: dict[str, dict[str, float]] = {}
-    for st in stations or STATIONS:
-        d = prepare_station(df, st, save_scaler=False)
-        y_pred, order = predict_one_step(d)
-        m = evaluate_and_save(st, MODEL_NAME, d.y_test.index, d.raw_test.values, y_pred)
-        results[st] = m
-        print(f"{st:15s} ARIMA{order} RMSE={m['RMSE']:.4f} MAE={m['MAE']:.4f} R2={m['R2']:.4f}")
-    return results
+def ejecutar() -> None:
+    """Entrena y evalúa ARIMA en todas las estaciones."""
+    df = cargar_datos()
+    for estacion in ESTACIONES:
+        ejecutar_arima(df, estacion)
 
 
 if __name__ == "__main__":
-    run()
+    ejecutar()

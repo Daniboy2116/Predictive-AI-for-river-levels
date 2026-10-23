@@ -17,6 +17,7 @@ OUTPUT = DATA_DIR / "datos_rios.xlsx"
 STATIONS = {
     "Palua": (8.0, 5.5, 0, 0.25),
     "Orinoco": (10.0, 6.5, 5, 0.30),
+    "Caicara": (9.5, 6.2, 4, 0.28),
     "Ciudad_Bolivar": (9.0, 6.0, 3, 0.28),
     "Ayacucho": (5.5, 4.0, -10, 0.20),
 }

@@ -1,0 +1,32 @@
+# === Caché y archivos compilados de Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+
+# === Entornos virtuales ===
+.venv/
+venv/
+env/
+
+# === Resultados y modelos generados (Carpeta outputs) ===
+# Ignora todo el contenido de outputs pero conserva la estructura usando .gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# === Checkpoints de Jupyter Notebooks ===
+.ipynb_checkpoints/
+
+# === Configuración de editores (VS Code, PyCharm, etc.) ===
+.vscode/
+.idea/
+
+# === Archivos temporales o de notas personales ===
+borrador.excalidraw
+comandos.txt
+
+# === Sistema Operativo ===
+.DS_Store
+Thumbs.db
+
+# === Datos masivos / Dataset (Descomentar si el archivo .xlsx es muy pesado) ===
+# data/*.xlsx

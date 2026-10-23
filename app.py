@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.evaluate import load_metrics, load_predictions
+from src.evaluate import cargar_metricas, cargar_predicciones
 
 STATION_LABELS = {
     "Palua": "Palúa", "Orinoco": "Orinoco", "Caicara": "Caicara",
@@ -48,7 +48,7 @@ section[data-testid="stSidebar"] { background: rgba(10, 22, 40, .85); backdrop-f
 @st.cache_data
 def get_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Carga predicciones y métricas exportadas por main.py."""
-    return load_predictions(), load_metrics()
+    return cargar_predicciones(), cargar_metricas()
 
 
 def card(col, label: str, value: str, sub: str) -> None:
@@ -69,14 +69,14 @@ if preds.empty:
 
 # ----------------------------------------------------------------- Sidebar
 with st.sidebar:
-    st.header("⚙️ Configuración")
+    st.header("Configuración")
     stations = [s for s in STATION_LABELS if s in preds["Estacion"].unique()]
     station = st.selectbox("Río / estación", stations, format_func=STATION_LABELS.get,
                            key="station_select")
     st.subheader("Modelos")
     available = sorted(preds.loc[preds["Estacion"] == station, "Modelo"].unique())
     selected = [m for m in available if st.checkbox(m, value=True, key=f"chk_{m}")]
-    if st.button("🔄 Recargar resultados", key="reload_btn"):
+    if st.button("Recargar resultados", key="reload_btn"):
         st.cache_data.clear()
         st.rerun()
 
@@ -114,7 +114,7 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # ----------------------------------------------------------------- Tabla de métricas
-st.subheader("📊 Métricas en test (ordenadas de mejor a peor por RMSE)")
+st.subheader("Métricas en test (ordenadas de mejor a peor por RMSE)")
 if sm.empty:
     st.info("Selecciona al menos un modelo en la barra lateral.")
 else:

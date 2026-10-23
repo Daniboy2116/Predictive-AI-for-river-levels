@@ -1,59 +1,52 @@
 """Pipeline completo: genera datos (si faltan), entrena y evalúa todos los modelos.
 
 Uso:
-    python main.py                      # todos los modelos
-    python main.py --models tree arima  # subconjunto
-"""
-from __future__ import annotations
+    python main.py
 
-import argparse
-import importlib
+Los modelos se ejecutan uno detrás de otro y cada uno guarda sus resultados en
+``outputs/predictions.csv`` y ``outputs/metrics.json``. Después se puede abrir
+el dashboard con:  python -m streamlit run app.py
+"""
 import time
-import traceback
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-GROUPS = {
-    "arima": "src.models.arima_model",
-    "tree": "src.models.tree_models",
-    "neural": "src.models.neural_models",
-    "google": "src.models.google_model",
-}
+import create_dummy_data
+from src.evaluate import cargar_metricas
+from src.models import arima_model, google_model, neural_models, tree_models
+
+RUTA_DATOS = Path(__file__).resolve().parent / "data" / "datos_rios.xlsx"
 
 
-def ensure_data() -> None:
-    """Genera el dataset simulado si no existe el Excel."""
-    if not (ROOT / "data" / "datos_rios.xlsx").exists():
-        import create_dummy_data
+def main() -> None:
+    """Ejecuta secuencialmente todos los modelos y muestra un resumen de métricas."""
+    # 1) Si todavía no existe el Excel real, generamos el dataset simulado
+    if not RUTA_DATOS.exists():
         create_dummy_data.main()
 
+    # 2) Entrenar y evaluar cada familia de modelos (en todas las estaciones)
+    inicio = time.perf_counter()
 
-def main() -> int:
-    """Ejecuta secuencialmente cada grupo de modelos; un fallo no detiene al resto."""
-    parser = argparse.ArgumentParser(description="Entrenamiento y evaluación de modelos")
-    parser.add_argument("--models", nargs="+", choices=list(GROUPS), default=list(GROUPS))
-    args = parser.parse_args()
+    print("\n=== ARIMA ===")
+    arima_model.ejecutar()
 
-    ensure_data()
-    failures: list[str] = []
-    for group in args.models:
-        print(f"\n=== {group.upper()} ===", flush=True)
-        t0 = time.perf_counter()
-        try:
-            importlib.import_module(GROUPS[group]).run()  # importación perezosa
-            print(f"--- {group} OK ({time.perf_counter() - t0:.1f}s)")
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-            failures.append(group)
+    print("\n=== ÁRBOLES (Random Forest y XGBoost) ===")
+    tree_models.ejecutar()
 
-    from src.evaluate import load_metrics
-    table = load_metrics().sort_values(["Estacion", "RMSE"])
+    print("\n=== REDES NEURONALES (LSTM, CNN1D y Transformer) ===")
+    neural_models.ejecutar()
+
+    print("\n=== PROPHET ===")
+    google_model.ejecutar()
+
+    duracion = time.perf_counter() - inicio
+    print("\nTiempo total: %.1f segundos" % duracion)
+
+    # 3) Resumen final ordenado de mejor a peor RMSE en cada estación
+    tabla = cargar_metricas()
+    tabla = tabla.sort_values(["Estacion", "RMSE"])
     print("\n=== RESUMEN (ordenado por RMSE) ===")
-    print(table.to_string(index=False, float_format="%.4f"))
-    if failures:
-        print(f"\nGrupos con errores: {failures}")
-    return 1 if failures else 0
+    print(tabla.to_string(index=False, float_format="%.4f"))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
