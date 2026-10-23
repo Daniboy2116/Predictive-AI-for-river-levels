@@ -1,118 +1,156 @@
 """Métricas de evaluación y guardado de resultados.
 
-Archivos generados (siempre en metros, escala original):
-- ``outputs/metrics.json``     -> ``{estacion: {modelo: {"RMSE", "MAE", "R2"}}}``
-- ``outputs/predictions.csv``  -> columnas ``Fecha, Estacion, Modelo, Real, Prediccion``
+Archivos generados (niveles siempre en metros, escala original):
+- ``outputs/predictions.csv``            -> predicciones de PRUEBA (2020-2025).
+- ``outputs/predicciones_validacion.csv`` -> predicciones de VALIDACIÓN (2015-2019), para el ensamble.
+  Ambos con columnas ``Fecha, Estacion, Modelo, Horizonte, Real, Prediccion, Observado``
+  (``Fecha`` es la fecha objetivo t + h).
+- ``outputs/metrics.json`` -> ``{estacion: {modelo: {horizonte: {"MAE", "RMSE", "NSE"}}}}``.
 
-Al guardar se conservan los resultados de los otros modelos, así cada script
-de ``src/models`` puede ejecutarse por separado sin borrar el trabajo de los demás.
+Las métricas se calculan solo con días observados (``Observado == True``).
+Al guardar se conservan los resultados de los otros modelos, así cada script de
+``src/models`` puede ejecutarse por separado sin borrar el trabajo de los demás.
 """
 import json
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
-CARPETA_SALIDA = CARPETA_PROYECTO / "outputs"
+from src.configuracion import CARPETA_SALIDA
+
 RUTA_METRICAS = CARPETA_SALIDA / "metrics.json"
 RUTA_PREDICCIONES = CARPETA_SALIDA / "predictions.csv"
+RUTA_PREDICCIONES_VALIDACION = CARPETA_SALIDA / "predicciones_validacion.csv"
+COLUMNAS_PREDICCIONES = ["Fecha", "Estacion", "Modelo", "Horizonte", "Real", "Prediccion", "Observado"]
 
 
 def calcular_metricas(y_real, y_pred) -> dict:
-    """Calcula RMSE, MAE y R² entre valores reales y predichos (ambos en metros).
+    """Calcula MAE, RMSE y NSE entre valores reales y predichos (ambos en metros).
 
-    Args:
-        y_real: valores observados.
-        y_pred: valores predichos por el modelo.
+    NSE (Nash-Sutcliffe) = 1 - Σ(y - ŷ)² / Σ(y - ȳ)². Es la métrica clásica en
+    hidrología: 1 es perfecto y 0 equivale a predecir siempre la media.
+    (Es la misma fórmula que el R² de scikit-learn.)
 
     Returns:
-        Diccionario ``{"RMSE": ..., "MAE": ..., "R2": ...}``.
+        Diccionario ``{"MAE": ..., "RMSE": ..., "NSE": ...}``.
     """
     y_real = np.asarray(y_real, dtype=float).ravel()
     y_pred = np.asarray(y_pred, dtype=float).ravel()
 
-    rmse = np.sqrt(mean_squared_error(y_real, y_pred))
     mae = mean_absolute_error(y_real, y_pred)
-    r2 = r2_score(y_real, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_real, y_pred))
+    nse = 1.0 - np.sum((y_real - y_pred) ** 2) / np.sum((y_real - y_real.mean()) ** 2)
 
-    metricas = {"RMSE": float(rmse), "MAE": float(mae), "R2": float(r2)}
+    metricas = {"MAE": float(mae), "RMSE": float(rmse), "NSE": float(nse)}
     return metricas
 
 
-def guardar_metricas(estacion: str, nombre_modelo: str, metricas: dict) -> None:
+def armar_predicciones(tabla: pd.DataFrame, nivel_predicho, estacion: str, nombre_modelo: str,
+                       horizonte: int) -> pd.DataFrame:
+    """Junta en una tabla las predicciones de un conjunto (validación o prueba) y un horizonte.
+
+    Args:
+        tabla: ``tabla_val`` o ``tabla_test`` de ``preparar_datos`` (aporta fechas, nivel real y máscara).
+        nivel_predicho: nivel pronosticado en metros, en el mismo orden que ``tabla``.
+        estacion: estación objetivo.
+        nombre_modelo: nombre con el que se guardará el modelo.
+        horizonte: días de anticipación.
+
+    Returns:
+        DataFrame con las columnas ``COLUMNAS_PREDICCIONES``.
+    """
+    predicciones = pd.DataFrame({
+        "Fecha": pd.to_datetime(tabla["fecha_objetivo"]).to_numpy(),
+        "Estacion": estacion,
+        "Modelo": nombre_modelo,
+        "Horizonte": horizonte,
+        "Real": tabla["nivel_objetivo"].to_numpy(),
+        "Prediccion": np.asarray(nivel_predicho, dtype=float).ravel(),
+        "Observado": tabla["observado"].to_numpy(),
+    })
+    return predicciones
+
+
+def _reemplazar_en_csv(ruta, nuevas: pd.DataFrame) -> None:
+    """Sustituye en el CSV las filas de los mismos (estación, modelo) por ``nuevas``."""
+    CARPETA_SALIDA.mkdir(parents=True, exist_ok=True)
+    if ruta.exists():
+        anteriores = pd.read_csv(ruta, parse_dates=["Fecha"])
+        claves_nuevas = nuevas[["Estacion", "Modelo"]].drop_duplicates()
+        for _, clave in claves_nuevas.iterrows():
+            mismas = (anteriores["Estacion"] == clave["Estacion"]) & (anteriores["Modelo"] == clave["Modelo"])
+            anteriores = anteriores[~mismas]
+        nuevas = pd.concat([anteriores, nuevas], ignore_index=True)
+
+    nuevas = nuevas.sort_values(["Estacion", "Modelo", "Horizonte", "Fecha"])
+    nuevas["Real"] = nuevas["Real"].round(4)
+    nuevas["Prediccion"] = nuevas["Prediccion"].round(4)
+    nuevas.to_csv(ruta, index=False)
+
+
+def guardar_metricas(estacion: str, nombre_modelo: str, metricas_por_horizonte: dict) -> None:
     """Añade (o reemplaza) las métricas de un modelo/estación en ``metrics.json``."""
     CARPETA_SALIDA.mkdir(parents=True, exist_ok=True)
-
-    # 1) Leer el archivo existente (si no existe empezamos con un diccionario vacío)
     if RUTA_METRICAS.exists():
         with open(RUTA_METRICAS, "r", encoding="utf-8") as archivo:
             todas_las_metricas = json.load(archivo)
     else:
         todas_las_metricas = {}
 
-    # 2) Insertar las nuevas métricas redondeadas
     if estacion not in todas_las_metricas:
         todas_las_metricas[estacion] = {}
-    todas_las_metricas[estacion][nombre_modelo] = {
-        "RMSE": round(metricas["RMSE"], 6),
-        "MAE": round(metricas["MAE"], 6),
-        "R2": round(metricas["R2"], 6),
-    }
+    todas_las_metricas[estacion][nombre_modelo] = {}
+    for horizonte, metricas in metricas_por_horizonte.items():
+        redondeadas = {}
+        for nombre, valor in metricas.items():
+            redondeadas[nombre] = round(valor, 6)
+        todas_las_metricas[estacion][nombre_modelo][str(horizonte)] = redondeadas
 
-    # 3) Escribir el archivo actualizado
     with open(RUTA_METRICAS, "w", encoding="utf-8") as archivo:
         json.dump(todas_las_metricas, archivo, indent=2, ensure_ascii=False)
 
 
-def guardar_predicciones(estacion: str, nombre_modelo: str, fechas, y_real, y_pred) -> None:
-    """Añade (o reemplaza) las predicciones de un modelo/estación en ``predictions.csv``."""
-    CARPETA_SALIDA.mkdir(parents=True, exist_ok=True)
+def evaluar_y_guardar(estacion: str, nombre_modelo: str, predicciones_val: pd.DataFrame,
+                      predicciones_test: pd.DataFrame) -> dict:
+    """Calcula las métricas de prueba por horizonte, guarda todo e imprime un resumen.
 
-    nuevas = pd.DataFrame({
-        "Fecha": pd.to_datetime(fechas),
-        "Estacion": estacion,
-        "Modelo": nombre_modelo,
-        "Real": np.asarray(y_real, dtype=float).ravel(),
-        "Prediccion": np.asarray(y_pred, dtype=float).ravel(),
-    })
-
-    if RUTA_PREDICCIONES.exists():
-        anteriores = pd.read_csv(RUTA_PREDICCIONES, parse_dates=["Fecha"])
-        # Quitamos las filas antiguas de este mismo modelo y estación
-        mismas_filas = (anteriores["Estacion"] == estacion) & (anteriores["Modelo"] == nombre_modelo)
-        anteriores = anteriores[~mismas_filas]
-        nuevas = pd.concat([anteriores, nuevas], ignore_index=True)
-
-    nuevas = nuevas.sort_values(["Estacion", "Modelo", "Fecha"])
-    nuevas.to_csv(RUTA_PREDICCIONES, index=False)
-
-
-def evaluar_y_guardar(estacion: str, nombre_modelo: str, fechas, y_real, y_pred) -> dict:
-    """Calcula las métricas, guarda métricas y predicciones, e imprime un resumen.
+    Args:
+        estacion: estación objetivo.
+        nombre_modelo: nombre del modelo.
+        predicciones_val: salida de :func:`armar_predicciones` (todos los horizontes) en validación.
+        predicciones_test: lo mismo en prueba.
 
     Returns:
-        Diccionario con las métricas calculadas.
+        ``{horizonte: {"MAE", "RMSE", "NSE"}}`` calculadas en prueba con días observados.
     """
-    metricas = calcular_metricas(y_real, y_pred)
-    guardar_metricas(estacion, nombre_modelo, metricas)
-    guardar_predicciones(estacion, nombre_modelo, fechas, y_real, y_pred)
+    metricas_por_horizonte = {}
+    for horizonte in sorted(predicciones_test["Horizonte"].unique()):
+        del_horizonte = predicciones_test[(predicciones_test["Horizonte"] == horizonte) & predicciones_test["Observado"]]
+        metricas_por_horizonte[int(horizonte)] = calcular_metricas(del_horizonte["Real"], del_horizonte["Prediccion"])
 
-    print(
-        estacion.ljust(15), nombre_modelo.ljust(13),
-        "RMSE = %.4f" % metricas["RMSE"],
-        "MAE = %.4f" % metricas["MAE"],
-        "R2 = %.4f" % metricas["R2"],
-        flush=True,
-    )
-    return metricas
+    guardar_metricas(estacion, nombre_modelo, metricas_por_horizonte)
+    _reemplazar_en_csv(RUTA_PREDICCIONES, predicciones_test)
+    _reemplazar_en_csv(RUTA_PREDICCIONES_VALIDACION, predicciones_val)
+
+    # Resumen: MAE en centímetros por horizonte
+    partes = []
+    for horizonte, metricas in metricas_por_horizonte.items():
+        partes.append("h" + str(horizonte) + " " + ("%.1f" % (100 * metricas["MAE"])))
+    print(estacion.ljust(15), nombre_modelo.ljust(22), "MAE (cm):", " | ".join(partes), flush=True)
+    return metricas_por_horizonte
 
 
 def cargar_metricas() -> pd.DataFrame:
-    """Lee ``metrics.json`` como tabla con columnas Estacion, Modelo, RMSE, MAE, R2."""
+    """Lee ``metrics.json`` como tabla y añade la mejora del MAE respecto a la persistencia.
+
+    Returns:
+        DataFrame con columnas ``Estacion, Modelo, Horizonte, MAE, RMSE, NSE, Mejora_vs_persistencia``
+        (la mejora en %, positiva si el modelo es mejor que la persistencia).
+    """
+    columnas = ["Estacion", "Modelo", "Horizonte", "MAE", "RMSE", "NSE", "Mejora_vs_persistencia"]
     if not RUTA_METRICAS.exists():
-        return pd.DataFrame(columns=["Estacion", "Modelo", "RMSE", "MAE", "R2"])
+        return pd.DataFrame(columns=columnas)
 
     with open(RUTA_METRICAS, "r", encoding="utf-8") as archivo:
         todas_las_metricas = json.load(archivo)
@@ -120,19 +158,32 @@ def cargar_metricas() -> pd.DataFrame:
     filas = []
     for estacion in todas_las_metricas:
         for nombre_modelo in todas_las_metricas[estacion]:
-            valores = todas_las_metricas[estacion][nombre_modelo]
-            filas.append({
-                "Estacion": estacion,
-                "Modelo": nombre_modelo,
-                "RMSE": valores["RMSE"],
-                "MAE": valores["MAE"],
-                "R2": valores["R2"],
-            })
-    return pd.DataFrame(filas)
+            for horizonte in todas_las_metricas[estacion][nombre_modelo]:
+                valores = todas_las_metricas[estacion][nombre_modelo][horizonte]
+                filas.append({
+                    "Estacion": estacion,
+                    "Modelo": nombre_modelo,
+                    "Horizonte": int(horizonte),
+                    "MAE": valores["MAE"],
+                    "RMSE": valores["RMSE"],
+                    "NSE": valores["NSE"],
+                })
+    tabla = pd.DataFrame(filas)
+
+    # Mejora relativa respecto a la persistencia de la misma estación y horizonte
+    persistencia = tabla[tabla["Modelo"] == "Persistencia"][["Estacion", "Horizonte", "MAE"]]
+    persistencia = persistencia.rename(columns={"MAE": "MAE_persistencia"})
+    tabla = tabla.merge(persistencia, on=["Estacion", "Horizonte"], how="left")
+    tabla["Mejora_vs_persistencia"] = 100.0 * (1.0 - tabla["MAE"] / tabla["MAE_persistencia"])
+    return tabla[columnas]
 
 
-def cargar_predicciones() -> pd.DataFrame:
-    """Lee ``predictions.csv`` (devuelve una tabla vacía si todavía no existe)."""
-    if not RUTA_PREDICCIONES.exists():
-        return pd.DataFrame(columns=["Fecha", "Estacion", "Modelo", "Real", "Prediccion"])
-    return pd.read_csv(RUTA_PREDICCIONES, parse_dates=["Fecha"])
+def cargar_predicciones(conjunto: str = "prueba") -> pd.DataFrame:
+    """Lee las predicciones de ``"prueba"`` o ``"validacion"`` (tabla vacía si no existen)."""
+    if conjunto == "validacion":
+        ruta = RUTA_PREDICCIONES_VALIDACION
+    else:
+        ruta = RUTA_PREDICCIONES
+    if not ruta.exists():
+        return pd.DataFrame(columns=COLUMNAS_PREDICCIONES)
+    return pd.read_csv(ruta, parse_dates=["Fecha"])
