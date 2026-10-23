@@ -168,13 +168,15 @@ def entrenar(modelo: nn.Module, parametros, x_train: torch.Tensor, y_train: torc
 
     Returns:
         Tupla ``(épocas usadas, mejor pérdida de validación)``. Al terminar, el modelo
-        queda con los pesos de la mejor época.
+        queda con los pesos de la mejor época (o los iniciales, si ninguna época mejora).
     """
     funcion_perdida = nn.MSELoss()   # error cuadrático medio (sobre los 15 horizontes)
     optimizador = torch.optim.Adam(parametros, lr=TASA_APRENDIZAJE)
     generador = torch.Generator().manual_seed(SEMILLA)
     numero_muestras = len(x_train)
-    mejor_perdida_val = float("inf")
+    # Punto de partida: si ninguna época mejora la validación, el modelo queda como estaba
+    prediccion_inicial = torch.tensor(predecir_por_lotes(modelo, x_val))
+    mejor_perdida_val = funcion_perdida(prediccion_inicial, y_val).item()
     mejores_pesos = copy.deepcopy(modelo.state_dict())
     epocas_sin_mejora = 0
     epocas_usadas = 0
