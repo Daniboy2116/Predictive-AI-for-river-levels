@@ -218,7 +218,9 @@ with pestana_dia:
     figura.add_vline(x=fecha_emision, line=dict(color="#94a3b8", dash="dot"))
     figura.add_annotation(x=fecha_emision, y=1.0, yref="paper", text="Emisión", showarrow=False,
                           font=dict(color="#94a3b8"), xanchor="left")
-    if estacion in UMBRALES_ALERTA:
+    # El umbral solo se dibuja si el río está cerca de él (si no, aplastaría la gráfica)
+    nivel_maximo_visible = max(historia.max(), del_dia["Prediccion"].max())
+    if estacion in UMBRALES_ALERTA and nivel_maximo_visible > UMBRALES_ALERTA[estacion] - 2.0:
         figura.add_hline(y=UMBRALES_ALERTA[estacion], line=dict(color="#ef4444", dash="dash"),
                          annotation_text="Umbral de alerta %.1f m" % UMBRALES_ALERTA[estacion])
     titulo = ("Pronóstico emitido el " + fecha_emision.strftime("%d-%m-%Y") + " para los próximos " +
