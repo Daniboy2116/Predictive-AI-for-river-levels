@@ -8,7 +8,7 @@ import pandas as pd
 from src.configuracion import ESTACIONES, FECHA_FIN_TRAIN, FECHA_FIN_VAL
 from src.preprocessing import (
     ajustar_climatologias, cambio_a_nivel, cargar_datos, construir_tabla, grupos_de_variables, leer_excel,
-    nombres_variables, preparar_datos, revisar_calidad,
+    nombres_variables, preparar_datos, preparar_ventanas, revisar_calidad,
 )
 
 # Los datos se cargan una sola vez para todas las pruebas
@@ -112,3 +112,20 @@ def test_reconstruccion_del_nivel():
     tabla = datos["tabla_test"]
     reconstruido = cambio_a_nivel(tabla["nivel_actual"], datos["y_test"])
     assert np.allclose(reconstruido, tabla["nivel_objetivo"])
+
+
+def test_ventanas_terminan_en_el_dia_de_emision():
+    """La última fila de cada ventana es el día t y los objetivos de train no pasan de 2014."""
+    datos = preparar_ventanas(NIVELES, OBSERVADOS, "Ciudad_Bolivar", 60, 15)
+    assert datos["ventanas"].shape[1:] == (60, 10)
+
+    posicion = 5000
+    origen = datos["origenes"][posicion]
+    columna = datos["canales"].index("Ciudad_Bolivar_nivel")
+    escalador = datos["escalador_canales"]
+    nivel_recuperado = datos["ventanas"][posicion, -1, columna] * escalador.scale_[columna] + escalador.mean_[columna]
+    assert np.isclose(nivel_recuperado, NIVELES.loc[origen, "Ciudad_Bolivar"], atol=1e-4)
+
+    ultimo_origen_train = datos["origenes"][datos["en_train"]].max()
+    assert ultimo_origen_train + pd.Timedelta(days=15) <= pd.Timestamp(FECHA_FIN_TRAIN)
+    assert not (datos["en_train"] & datos["en_val"]).any()

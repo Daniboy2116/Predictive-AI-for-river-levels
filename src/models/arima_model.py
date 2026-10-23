@@ -44,11 +44,13 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
         anomalias[nombre] = niveles[nombre] - evaluar_climatologia(climatologias[nombre], niveles.index)
 
     otras_estaciones = []
+    nombres_exogenas = []
     for nombre in ESTACIONES:
         if nombre != estacion:
             otras_estaciones.append(nombre)
+            nombres_exogenas.append(nombre + "_t-" + str(REZAGO_EXOGENAS))
     exogenas = anomalias[otras_estaciones].shift(REZAGO_EXOGENAS)
-    exogenas.columns = [nombre + "_t-" + str(REZAGO_EXOGENAS) for nombre in otras_estaciones]
+    exogenas.columns = nombres_exogenas
 
     # Los primeros días no tienen exógenas (no hay datos 15 días antes): se descartan
     anomalia_objetivo = anomalias[estacion].iloc[REZAGO_EXOGENAS:]

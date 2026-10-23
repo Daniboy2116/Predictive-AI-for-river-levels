@@ -244,7 +244,7 @@ def evaluar_climatologia(coeficientes: np.ndarray, fechas: pd.DatetimeIndex) -> 
     armonicos = (len(coeficientes) - 1) // 2
     matriz = variables_calendario(fechas, armonicos).to_numpy()
     matriz = np.column_stack([np.ones(len(matriz)), matriz])
-    return matriz @ coeficientes
+    return np.dot(matriz, coeficientes)
 
 
 def ajustar_climatologias(niveles: pd.DataFrame, observados: pd.DataFrame) -> dict:
@@ -402,6 +402,83 @@ def preparar_datos(niveles: pd.DataFrame, observados: pd.DataFrame, estacion_obj
         valores_escalados = escalador.transform(tabla_conjunto[variables])
         datos["x_" + nombre] = pd.DataFrame(valores_escalados, index=tabla_conjunto.index, columns=variables)
         datos["y_" + nombre] = tabla_conjunto["cambio"]
+    return datos
+
+
+def preparar_ventanas(niveles: pd.DataFrame, observados: pd.DataFrame, estacion_objetivo: str,
+                      longitud_ventana: int, maximo_horizonte: int) -> dict:
+    """Prepara ventanas de días consecutivos para las redes neuronales secuenciales.
+
+    Cada muestra es el día de emisión t con:
+
+    - Entrada (ventana): los ``longitud_ventana`` días que terminan en t, con 10
+      canales por día: nivel y anomalía de las 4 estaciones y seno/coseno del día del año.
+    - Salida: los cambios y(t + k) - y(t) de la estación objetivo para k = 1..``maximo_horizonte``
+      (una sola red pronostica todos los horizontes a la vez).
+
+    Escalado (ajustado SOLO con días de train): Z-Score por canal y por horizonte.
+
+    Muestras para entrenar: días de emisión cuyo objetivo más lejano (t + maximo_horizonte)
+    cae en train. Muestras para early stopping: las que caen completas en validación.
+
+    Returns:
+        Diccionario con ``ventanas`` (array float32 de forma (muestras, longitud_ventana, 10)),
+        ``origenes`` (fechas t de cada muestra), ``cambios_escalados`` (muestras, maximo_horizonte),
+        ``escalador_objetivo``, ``escalador_canales``, ``canales`` (nombres) y ``en_train`` /
+        ``en_val`` (máscaras booleanas por muestra).
+    """
+    fin_train = pd.Timestamp(FECHA_FIN_TRAIN)
+    fin_val = pd.Timestamp(FECHA_FIN_VAL)
+    climatologias = ajustar_climatologias(niveles, observados)
+    dia_en_train = niveles.index <= fin_train
+
+    # --- 1) Canales diarios (todos conocidos en su propio día) ---
+    canales = pd.DataFrame(index=niveles.index)
+    for estacion in ESTACIONES:
+        canales[estacion + "_nivel"] = niveles[estacion]
+        climatologia = evaluar_climatologia(climatologias[estacion], niveles.index)
+        canales[estacion + "_anomalia"] = niveles[estacion] - climatologia
+    calendario = variables_calendario(niveles.index, 1)
+    canales["sen_1"] = calendario["sen_1"]
+    canales["cos_1"] = calendario["cos_1"]
+
+    escalador_canales = StandardScaler()
+    escalador_canales.fit(canales[dia_en_train])
+    canales_escalados = escalador_canales.transform(canales).astype(np.float32)
+
+    # --- 2) Ventanas: la muestra i contiene los días i .. i + longitud_ventana - 1 ---
+    # sliding_window_view devuelve (muestras, canales, días); lo pasamos a (muestras, días, canales)
+    ventanas = np.lib.stride_tricks.sliding_window_view(canales_escalados, longitud_ventana, axis=0)
+    ventanas = np.ascontiguousarray(ventanas.transpose(0, 2, 1))
+    origenes = niveles.index[longitud_ventana - 1:]
+
+    # --- 3) Objetivos: cambios a 1..maximo_horizonte días ---
+    serie_objetivo = niveles[estacion_objetivo]
+    cambios = pd.DataFrame(index=niveles.index)
+    for paso in range(1, maximo_horizonte + 1):
+        cambios[paso] = serie_objetivo.shift(-paso) - serie_objetivo
+    cambios = cambios.loc[origenes].to_numpy()
+
+    fecha_mas_lejana = origenes + pd.Timedelta(days=maximo_horizonte)
+    fecha_mas_cercana = origenes + pd.Timedelta(days=1)
+    en_train = np.asarray(fecha_mas_lejana <= fin_train)
+    en_val = np.asarray((fecha_mas_cercana > fin_train) & (fecha_mas_lejana <= fin_val))
+
+    escalador_objetivo = StandardScaler()
+    escalador_objetivo.fit(cambios[en_train])
+    # Al final de la serie faltan objetivos (NaN); esas muestras solo se usan para predecir
+    cambios_escalados = escalador_objetivo.transform(cambios).astype(np.float32)
+
+    datos = {
+        "ventanas": ventanas,
+        "origenes": origenes,
+        "cambios_escalados": cambios_escalados,
+        "escalador_objetivo": escalador_objetivo,
+        "escalador_canales": escalador_canales,
+        "en_train": en_train,
+        "en_val": en_val,
+        "canales": list(canales.columns),
+    }
     return datos
 
 
