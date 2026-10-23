@@ -3,38 +3,70 @@
 ## Rol
 Actuar como Ingeniero Senior de IA y Ciencia de Datos. Código modular, tipado, documentado (docstrings en español) y reproducible (semillas fijas).
 
+## Objetivo
+Pronosticar el nivel del río Orinoco (en metros) a **15 días vista** en `Ciudad_Bolivar` y `Palua`,
+aprovechando la información de las estaciones aguas arriba. El análisis de referencia está en
+`Nivel_Orinoco_Analisis_y_Modelos.pdf` (persistencia: MAE 109,2 cm / 82,0 cm; LightGBM: 38,5 cm / 36,1 cm).
+
 ## Estaciones
-`Palua`, `Orinoco`, `Caicara`, `Ciudad_Bolivar`, `Ayacucho` (nombres de columna en `data/datos_rios.xlsx`).
+De aguas arriba a aguas abajo: `Ayacucho`, `Caicara`, `Ciudad_Bolivar`, `Palua` (nombres de columna en `data/datos_rios.xlsx`).
+- Estaciones objetivo: `Ciudad_Bolivar` y `Palua` (configurable en `src/configuracion.py`).
+- Las cuatro estaciones se usan como variables de entrada.
 
 ## Datos
 - Mientras no exista el Excel real, usar `create_dummy_data.py` → `data/datos_rios.xlsx`.
-- Columna `Fecha` diaria (2020-01-01 a 2025-12-31) + una columna numérica por estación (niveles en metros).
-- El dataset simulado incluye estacionalidad anual, tendencia leve, ruido y ~2% de NaN para probar la imputación.
+- Columna `Fecha` diaria (1974-01-01 a 2025-12-31) + una columna numérica por estación (niveles en metros).
+- El dataset simulado reproduce lo descrito en el PDF: ciclo anual con máximo en agosto y mínimo en marzo,
+  onda de crecida que viaja aguas abajo (Ayacucho → Ciudad Bolívar ≈ 18 días, Caicara → Ciudad Bolívar ≈ 4 días,
+  Ciudad Bolívar y Palúa simultáneas), anomalías con memoria larga (~70 días), huecos de datos y dos
+  cambios de referencia en Ciudad Bolívar (15-05-1987: −2,20 m; 01-01-2019: +1,00 m).
 
 ## Estructura
 ```
 create_dummy_data.py
 data/datos_rios.xlsx
 src/__init__.py
-src/preprocessing.py      # carga, interpolación temporal, lags t-1..t-7, escalado, split 70/15/15
-src/evaluate.py           # RMSE, MAE, R², exportación CSV/JSON
+src/configuracion.py        # estaciones, horizontes, fechas de corte, rutas, semilla
+src/preprocessing.py        # carga, control de calidad, imputación, climatología, variables, split, escalado
+src/evaluate.py             # MAE, RMSE, NSE, mejora vs persistencia, exportación CSV/JSON
 src/models/__init__.py
-src/models/arima_model.py # ARIMA (orden elegido por AIC)
-src/models/tree_models.py # RandomForest, XGBoost
-src/models/neural_models.py # LSTM, CNN1D, Transformer
+src/models/linea_base.py    # Persistencia, Climatología armónica, Anomalía amortiguada
+src/models/lineal_model.py  # Regresión Ridge
+src/models/tree_models.py   # RandomForest, XGBoost, LightGBM
+src/models/arima_model.py   # SARIMAX (anomalía + exógenas aguas arriba)
 src/models/google_model.py  # Prophet
-outputs/                  # predictions.csv, metrics.json
-app.py                    # Streamlit + Plotly
-main.py                   # entrenamiento y evaluación secuencial
-proyecto_completo.ipynb   # flujo completo, educativo, de principio a fin
+src/models/neural_models.py # LSTM, CNN1D causal dilatada, Transformer (salida multi-horizonte)
+src/models/ensamble.py      # Ensamble apilado (stacking)
+tests/                      # pruebas pytest (fugas de información, split, métricas)
+outputs/                    # predictions.csv, predicciones_validacion.csv, metrics.json, escaladores
+app.py                      # Streamlit + Plotly
+main.py                     # entrenamiento y evaluación secuencial
+proyecto_completo.ipynb     # flujo completo, educativo, de principio a fin
 requirements.txt
 ```
 
 ## Reglas técnicas
-1. **Preprocesamiento:** fecha → `datetime` como índice; `interpolate(method="time")`; lags t-1..t-7; escalado Min-Max o Z-Score guardando escaladores (joblib) para desnormalizar.
-2. **Split cronológico estricto** 70% train / 15% val / 15% test. **Nunca** mezclar aleatoriamente. Ajustar escaladores solo con train (evitar *data leakage*).
-3. **Modelos:** ARIMA; RandomForestRegressor y XGBRegressor con lags; LSTM, CNN 1D (Conv1D + MaxPooling1D) y Transformer (self-attention); Prophet.
-4. **Evaluación:** métricas sobre test en escala original: RMSE, MAE, R². Guardar `outputs/predictions.csv` y `outputs/metrics.json`.
-5. **App:** Streamlit, selector de río en sidebar, checkboxes de modelos, gráfica Plotly Real vs Predicciones, tabla de métricas.
-6. **Código educativo:** imports normales al inicio del archivo (sin importaciones perezosas, `try/except ImportError` ni *fallbacks*), sin decoradores ni sintaxis hipercompacta. Cada modelo sigue 4 pasos marcados con encabezados (`# === PASO 1: PREPARACIÓN DE DATOS ===`, definición, entrenamiento, predicción + inversión de escala). Si un modelo se aparta de la plantilla, añadir un comentario `# [JUSTIFICACIÓN]: ...`.
-7. Avanzar paso a paso; validar cada módulo antes de continuar.
+1. **Preprocesamiento:** fecha → `datetime` como índice con frecuencia diaria; corregir los cambios de referencia
+   declarados en la configuración; imputar con `interpolate(method="time")` pero **evaluar solo en días observados**.
+2. **Pronóstico directo:** ŷ(t+h) = y(t) + f(x(t)). El modelo aprende el **cambio** y(t+h) − y(t) usando solo
+   información disponible hasta el día t. Horizontes evaluados: 1, 3, 5, 7, 10 y 15 días (principal: 15).
+3. **Variables (79):** cíclicas (seno/coseno k = 1..3 del día del año en t+h y cambio climatológico esperado),
+   rezagos y(t−L) con L ∈ {0, 1, 2, 3, 5, 7, 10, 15, 20, 30}, tendencias Δw = y(t) − y(t−w) con
+   w ∈ {1, 3, 7, 15, 30}, medias móviles de 7 y 30 días y anomalía. Rezagos, tendencias y suavizado se calculan
+   para las cuatro estaciones.
+4. **Split cronológico estricto por años:** train 1974–2014, validación 2015–2019, prueba 2020–2025 (según la
+   fecha objetivo t+h). **Nunca** mezclar aleatoriamente. La climatología armónica y los escaladores
+   (Z-Score, guardados con joblib) se ajustan **solo con train** para evitar *data leakage*.
+   Todos los modelos se entrenan con train; validación sirve para *early stopping*, selección y para ajustar el ensamble.
+5. **Modelos:** líneas base (persistencia, climatología armónica, anomalía amortiguada); Ridge; RandomForest,
+   XGBoost y LightGBM; SARIMAX; LSTM, CNN 1D (Conv1D causal dilatada + MaxPooling1D) y Transformer (self-attention);
+   Prophet; ensamble apilado.
+6. **Evaluación:** métricas sobre prueba en metros: MAE, RMSE, NSE (Nash-Sutcliffe) y mejora del MAE respecto a la
+   persistencia. Guardar `outputs/predictions.csv` y `outputs/metrics.json`.
+7. **App:** Streamlit, selector de estación y horizonte en sidebar, checkboxes de modelos, gráfica Plotly Real vs
+   Predicciones con umbral de alerta, tabla de métricas y curva de error por horizonte.
+8. **Código educativo:** imports normales al inicio del archivo (sin importaciones perezosas, `try/except ImportError`
+   ni *fallbacks*), sin decoradores ni sintaxis hipercompacta. Cada modelo sigue 4 pasos marcados con encabezados
+   (`# === PASO 1: PREPARACIÓN DE DATOS ===`, definición, entrenamiento, predicción + inversión de escala).
+   Si un modelo se aparta de la plantilla, añadir un comentario `# [JUSTIFICACIÓN]: ...`.
+9. Avanzar paso a paso; validar cada módulo antes de continuar (`python -m pytest`).
