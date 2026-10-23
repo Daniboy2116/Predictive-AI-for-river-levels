@@ -10,6 +10,12 @@ Las tres reciben ventanas de 60 días con 10 canales (nivel y anomalía de las c
 estaciones + calendario) y devuelven 15 valores: el cambio escalado del nivel a
 1, 2, ..., 15 días.
 
+Atajo lineal y entrenamiento en dos etapas: cada red va acompañada de un "atajo"
+lineal (una capa Linear sobre los últimos 31 días, equivalente a un Ridge). Primero
+se entrena solo el atajo; después se congela y la red aprende únicamente lo que el
+modelo lineal no explica. Si no hay nada no lineal que aprender, la red se queda
+cerca de cero y el resultado no empeora respecto al modelo lineal.
+
 Ejecutar:  python -m src.models.neural_models
 """
 import copy
@@ -27,10 +33,11 @@ from src.preprocessing import cambio_a_nivel, cargar_datos, preparar_datos, prep
 # Hiperparámetros comunes a las tres redes
 LONGITUD_VENTANA = 60    # días de historia que ve la red
 MAXIMO_HORIZONTE = 15    # la red predice los cambios a 1..15 días
-EPOCAS_MAXIMAS = 80      # vueltas completas máximas sobre los datos de entrenamiento
+EPOCAS_MAXIMAS = 150     # vueltas completas máximas sobre los datos de entrenamiento
 TAMANO_LOTE = 64         # cuántas muestras se usan en cada actualización de pesos
 TASA_APRENDIZAJE = 0.001
 PACIENCIA = 10           # épocas sin mejorar en validación antes de detenerse
+DIAS_ATAJO = 31          # días recientes que ve el atajo lineal
 
 NOMBRES_REDES = ["LSTM", "CNN1D", "Transformer"]
 
@@ -138,6 +145,71 @@ def crear_red(nombre_red: str, numero_canales: int, numero_salidas: int) -> nn.M
     raise ValueError("Red desconocida: " + nombre_red)
 
 
+class RedConAtajoLineal(nn.Module):
+    """Suma de un atajo lineal (últimos ``DIAS_ATAJO`` días) y una red no lineal."""
+
+    def __init__(self, red: nn.Module, numero_canales: int, numero_salidas: int):
+        super().__init__()
+        self.red = red
+        self.atajo = nn.Linear(DIAS_ATAJO * numero_canales, numero_salidas)
+        # La red empieza respondiendo cero: al principio el modelo es solo el atajo lineal
+        nn.init.zeros_(self.red.capa_salida.weight)
+        nn.init.zeros_(self.red.capa_salida.bias)
+
+    def forward(self, x):
+        dias_recientes = x[:, -DIAS_ATAJO:, :]                       # (lote, 31, 10)
+        entrada_atajo = dias_recientes.reshape(x.shape[0], -1)      # aplanar: (lote, 310)
+        return self.atajo(entrada_atajo) + self.red(x)              # (lote, 15)
+
+
+def entrenar(modelo: nn.Module, parametros, x_train: torch.Tensor, y_train: torch.Tensor,
+             x_val: torch.Tensor, y_val: torch.Tensor) -> tuple:
+    """Bucle de entrenamiento con early stopping; solo se actualizan ``parametros``.
+
+    Returns:
+        Tupla ``(épocas usadas, mejor pérdida de validación)``. Al terminar, el modelo
+        queda con los pesos de la mejor época.
+    """
+    funcion_perdida = nn.MSELoss()   # error cuadrático medio (sobre los 15 horizontes)
+    optimizador = torch.optim.Adam(parametros, lr=TASA_APRENDIZAJE)
+    generador = torch.Generator().manual_seed(SEMILLA)
+    numero_muestras = len(x_train)
+    mejor_perdida_val = float("inf")
+    mejores_pesos = copy.deepcopy(modelo.state_dict())
+    epocas_sin_mejora = 0
+    epocas_usadas = 0
+
+    for epoca in range(EPOCAS_MAXIMAS):
+        epocas_usadas = epoca + 1
+        # 1) Entrenar una época completa, lote a lote
+        modelo.train()
+        orden_aleatorio = torch.randperm(numero_muestras, generator=generador)
+        for inicio in range(0, numero_muestras, TAMANO_LOTE):
+            indices_lote = orden_aleatorio[inicio:inicio + TAMANO_LOTE]
+            optimizador.zero_grad()                              # borrar gradientes anteriores
+            prediccion_lote = modelo(x_train[indices_lote])      # predicción
+            perdida = funcion_perdida(prediccion_lote, y_train[indices_lote])
+            perdida.backward()                                   # calcular gradientes
+            optimizador.step()                                   # actualizar pesos
+
+        # 2) Medir el error en validación (sin actualizar pesos)
+        prediccion_val = torch.tensor(predecir_por_lotes(modelo, x_val))
+        perdida_val = funcion_perdida(prediccion_val, y_val).item()
+
+        # 3) Early stopping
+        if perdida_val < mejor_perdida_val:
+            mejor_perdida_val = perdida_val
+            mejores_pesos = copy.deepcopy(modelo.state_dict())
+            epocas_sin_mejora = 0
+        else:
+            epocas_sin_mejora = epocas_sin_mejora + 1
+            if epocas_sin_mejora >= PACIENCIA:
+                break
+
+    modelo.load_state_dict(mejores_pesos)   # nos quedamos con la mejor época
+    return epocas_usadas, mejor_perdida_val
+
+
 def predecir_por_lotes(modelo: nn.Module, ventanas: torch.Tensor) -> np.ndarray:
     """Predice en lotes grandes (sin calcular gradientes) para no agotar la memoria."""
     modelo.eval()
@@ -173,55 +245,31 @@ def ejecutar_red_neuronal(niveles: pd.DataFrame, observados: pd.DataFrame, estac
     y_val = objetivos[datos["en_val"]]
 
     # === PASO 2: DEFINICIÓN DEL MODELO ===
-    modelo = crear_red(nombre_red, ventanas.shape[2], MAXIMO_HORIZONTE)
-    funcion_perdida = nn.MSELoss()   # error cuadrático medio (sobre los 15 horizontes)
-    optimizador = torch.optim.Adam(modelo.parameters(), lr=TASA_APRENDIZAJE)
+    red = crear_red(nombre_red, ventanas.shape[2], MAXIMO_HORIZONTE)
+    modelo = RedConAtajoLineal(red, ventanas.shape[2], MAXIMO_HORIZONTE)
 
     # === PASO 3: ENTRENAMIENTO ===
     # [JUSTIFICACIÓN]: a diferencia de scikit-learn (un simple .fit()), en PyTorch el
-    # entrenamiento se escribe a mano con un bucle de épocas:
-    #   1. Se recorren los datos de train en lotes pequeños y se actualizan los pesos.
-    #   2. Al final de cada época se mide el error en validación.
-    #   3. Se guardan los mejores pesos y se para si no mejora en PACIENCIA épocas.
-    # Barajamos el orden de las VENTANAS (no la serie): cada ventana ya contiene sus
-    # 60 días en orden, así que no se rompe la cronología ni hay fuga de información.
-    generador = torch.Generator().manual_seed(SEMILLA)
-    numero_muestras = len(x_train)
-    mejor_perdida_val = float("inf")
-    mejores_pesos = copy.deepcopy(modelo.state_dict())
-    epocas_sin_mejora = 0
-    epocas_usadas = 0
-
-    for epoca in range(EPOCAS_MAXIMAS):
-        epocas_usadas = epoca + 1
-        # 3.1) Entrenar una época completa, lote a lote
-        modelo.train()
-        orden_aleatorio = torch.randperm(numero_muestras, generator=generador)
-        for inicio in range(0, numero_muestras, TAMANO_LOTE):
-            indices_lote = orden_aleatorio[inicio:inicio + TAMANO_LOTE]
-            optimizador.zero_grad()                              # borrar gradientes anteriores
-            prediccion_lote = modelo(x_train[indices_lote])      # predicción
-            perdida = funcion_perdida(prediccion_lote, y_train[indices_lote])
-            perdida.backward()                                   # calcular gradientes
-            optimizador.step()                                   # actualizar pesos
-
-        # 3.2) Medir el error en validación (sin actualizar pesos)
-        prediccion_val = torch.tensor(predecir_por_lotes(modelo, x_val))
-        perdida_val = funcion_perdida(prediccion_val, y_val).item()
-
-        # 3.3) Early stopping
-        if perdida_val < mejor_perdida_val:
-            mejor_perdida_val = perdida_val
-            mejores_pesos = copy.deepcopy(modelo.state_dict())
-            epocas_sin_mejora = 0
-        else:
-            epocas_sin_mejora = epocas_sin_mejora + 1
-            if epocas_sin_mejora >= PACIENCIA:
-                break
-
-    modelo.load_state_dict(mejores_pesos)   # nos quedamos con la mejor época
-    print(estacion.ljust(15), nombre_red.ljust(12), "épocas:", epocas_usadas,
-          "| MSE validación (escalado): %.4f" % mejor_perdida_val, flush=True)
+    # entrenamiento se escribe a mano (función entrenar): épocas de lotes barajados,
+    # error de validación al final de cada época y early stopping. Barajamos el orden de
+    # las VENTANAS (no la serie): cada ventana ya contiene sus 60 días en orden, así que
+    # no se rompe la cronología ni hay fuga de información.
+    # [JUSTIFICACIÓN]: se entrena en dos etapas. Si se entrenan juntas, la parte no lineal
+    # aprende más rápido, se sobreajusta y el early stopping corta antes de que la parte
+    # lineal (la más útil) termine de aprender.
+    # Etapa 1: solo el atajo lineal (la red está congelada y responde cero)
+    for parametro in modelo.red.parameters():
+        parametro.requires_grad = False
+    epocas_lineal, perdida_lineal = entrenar(modelo, modelo.atajo.parameters(), x_train, y_train, x_val, y_val)
+    # Etapa 2: se congela el atajo y la red aprende lo que el modelo lineal no explica
+    for parametro in modelo.atajo.parameters():
+        parametro.requires_grad = False
+    for parametro in modelo.red.parameters():
+        parametro.requires_grad = True
+    epocas_red, perdida_red = entrenar(modelo, modelo.red.parameters(), x_train, y_train, x_val, y_val)
+    print(estacion.ljust(15), nombre_red.ljust(12),
+          "MSE validación (escalado): atajo lineal %.4f (%d épocas) -> con la red %.4f (%d épocas)"
+          % (perdida_lineal, epocas_lineal, perdida_red, epocas_red), flush=True)
 
     # === PASO 4: PREDICCIÓN E INVERSIÓN DE ESCALA ===
     # Se predice para todos los días de emisión; luego cada horizonte toma su columna.

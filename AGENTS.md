@@ -29,20 +29,22 @@ src/__init__.py
 src/configuracion.py        # estaciones, horizontes, fechas de corte, rutas, semilla
 src/preprocessing.py        # carga, control de calidad, imputación, climatología, variables, split, escalado
 src/evaluate.py             # MAE, RMSE, NSE, mejora vs persistencia, exportación CSV/JSON
+src/contribucion.py         # ablación por grupos de variables (Figura 8 del PDF)
 src/models/__init__.py
 src/models/linea_base.py    # Persistencia, Climatología armónica, Anomalía amortiguada
 src/models/lineal_model.py  # Regresión Ridge
 src/models/tree_models.py   # RandomForest, XGBoost, LightGBM
 src/models/arima_model.py   # SARIMAX (anomalía + exógenas aguas arriba)
 src/models/google_model.py  # Prophet
-src/models/neural_models.py # LSTM, CNN1D causal dilatada, Transformer (salida multi-horizonte)
+src/models/neural_models.py # LSTM, CNN1D causal dilatada, Transformer (salida multi-horizonte, atajo lineal)
 src/models/ensamble.py      # Ensamble apilado (stacking)
 tests/                      # pruebas pytest (fugas de información, split, métricas)
 outputs/                    # predictions.csv, predicciones_validacion.csv, metrics.json, escaladores
-app.py                      # Streamlit + Plotly
+app.py                      # Streamlit + Plotly (tema en .streamlit/config.toml)
 main.py                     # entrenamiento y evaluación secuencial
 proyecto_completo.ipynb     # flujo completo, educativo, de principio a fin
 requirements.txt
+pytest.ini
 ```
 
 ## Reglas técnicas
