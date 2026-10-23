@@ -30,3 +30,5 @@ Thumbs.db
 
 # === Datos masivos / Dataset (Descomentar si el archivo .xlsx es muy pesado) ===
 # data/*.xlsx
+# === Pytest ===
+.pytest_cache/

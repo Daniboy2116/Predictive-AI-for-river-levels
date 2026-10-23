@@ -1,184 +1,437 @@
-"""Preprocesamiento de las series de niveles de ríos (PASO 1 común a todos los modelos).
+"""Preprocesamiento de los niveles del Orinoco (PASO 1 común a todos los modelos).
 
 Flujo, en este orden (para evitar *data leakage*):
-1. Cargar el Excel y usar ``Fecha`` como índice diario.
-2. Rellenar los valores faltantes con interpolación temporal.
-3. Dividir la serie cronológicamente: 70% train, 15% val, 15% test.
-4. Ajustar el escalador Min-Max SOLO con train y transformar toda la serie.
-5. Crear las columnas de retardos (lags) t-1 ... t-7 y separar X / y.
+1. ``leer_excel``: la columna ``Fecha`` pasa a ser un índice diario continuo.
+2. Control de calidad: ``detectar_cambios_de_referencia`` busca saltos bruscos
+   comparando cada estación con una vecina; ``corregir_cambios_de_referencia``
+   aplica solo los saltos confirmados en la configuración.
+3. ``imputar_huecos``: interpolación temporal, guardando qué días eran observados
+   (las métricas se calculan solo con días observados).
+4. ``ajustar_climatologia``: ciclo anual medio con armónicos, ajustado SOLO con train.
+5. ``construir_tabla``: 79 variables conocidas en el día t y el objetivo
+   ``cambio = y(t + h) - y(t)``.
+6. ``preparar_datos``: split por fecha objetivo (train / validación / prueba) y
+   escalado Z-Score ajustado SOLO con train.
 """
-from pathlib import Path
-
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 
-# --------------------------------------------------------------------------
-# Configuración general del proyecto
-# --------------------------------------------------------------------------
-CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
-RUTA_DATOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
-CARPETA_ESCALADORES = CARPETA_PROYECTO / "outputs" / "scalers"
+from src.configuracion import (
+    ARMONICOS_CALENDARIO, ARMONICOS_CLIMATOLOGIA, CAMBIOS_DE_REFERENCIA, CARPETA_ESCALADORES,
+    ESTACIONES, ESTACIONES_OBJETIVO, FECHA_FIN_TRAIN, FECHA_FIN_VAL, HORIZONTES, REZAGOS, RUTA_DATOS,
+    VECINAS_CONTROL, VENTANAS_MEDIA_MOVIL, VENTANAS_TENDENCIA,
+)
 
-ESTACIONES = ["Palua", "Orinoco", "Caicara", "Ciudad_Bolivar", "Ayacucho"]
-SEMILLA = 42            # semilla fija para que los resultados sean reproducibles
-NUMERO_DE_LAGS = 7      # usamos los niveles de los 7 días anteriores
-PORCENTAJE_TRAIN = 0.70
-PORCENTAJE_VAL = 0.15   # el 15% restante es test
+# Columnas de la tabla que NO son variables de entrada (información para evaluar)
+COLUMNAS_META = ["fecha_objetivo", "nivel_actual", "nivel_objetivo", "cambio", "observado"]
 
 
-def cargar_datos(ruta: Path = RUTA_DATOS) -> pd.DataFrame:
-    """Lee el Excel y devuelve un DataFrame diario, indexado por fecha y sin NaN.
+# ==========================================================================
+# 1) CARGA
+# ==========================================================================
+def leer_excel(ruta=RUTA_DATOS) -> pd.DataFrame:
+    """Lee el Excel y devuelve un DataFrame con índice diario continuo.
 
-    Args:
-        ruta: ruta al archivo Excel con la columna ``Fecha`` y una columna por estación.
-
-    Returns:
-        DataFrame con índice de fechas (frecuencia diaria) y niveles en metros.
-    """
-    df = pd.read_excel(ruta)
-
-    # La columna Fecha pasa a ser el índice (tipo datetime)
-    df["Fecha"] = pd.to_datetime(df["Fecha"])
-    df = df.set_index("Fecha")
-    df = df.sort_index()
-
-    # Eliminamos fechas repetidas y forzamos frecuencia diaria
-    # (si falta algún día, aparece como una fila con NaN)
-    fechas_repetidas = df.index.duplicated(keep="first")
-    df = df[~fechas_repetidas]
-    df = df.asfreq("D")
-
-    # Rellenamos los huecos interpolando según la distancia en el tiempo.
-    # limit_direction="both" también rellena posibles NaN al principio o al final.
-    df = df.interpolate(method="time", limit_direction="both")
-    return df
-
-
-def crear_lags(serie: pd.Series, numero_de_lags: int = NUMERO_DE_LAGS) -> pd.DataFrame:
-    """Convierte una serie en una tabla supervisada: ``objetivo`` + ``lag_1`` ... ``lag_n``.
-
-    Ejemplo: para el día t, ``lag_1`` es el nivel de t-1, ``lag_2`` el de t-2, etc.
-    El ``objetivo`` es el nivel del propio día t (lo que queremos predecir).
+    Las fechas repetidas se eliminan (se conserva la primera) y las fechas que no
+    aparecen en el archivo se añaden como filas con NaN.
 
     Args:
-        serie: serie temporal (puede estar escalada).
-        numero_de_lags: cuántos días anteriores usar como entradas.
+        ruta: ruta al Excel con la columna ``Fecha`` y una columna por estación.
 
     Returns:
-        DataFrame sin filas incompletas (se pierden los primeros ``numero_de_lags`` días).
+        DataFrame con índice ``Fecha`` (frecuencia diaria) y una columna por estación.
     """
-    tabla = pd.DataFrame(index=serie.index)
-    tabla["objetivo"] = serie
+    tabla = pd.read_excel(ruta)
+    tabla["Fecha"] = pd.to_datetime(tabla["Fecha"])
+    tabla = tabla.set_index("Fecha")
+    tabla = tabla.sort_index()
 
-    for k in range(1, numero_de_lags + 1):
-        tabla["lag_" + str(k)] = serie.shift(k)
+    fechas_repetidas = tabla.index.duplicated(keep="first")
+    tabla = tabla[~fechas_repetidas]
+    tabla = tabla.asfreq("D")
+    return tabla[ESTACIONES]
 
+
+# ==========================================================================
+# 2) CONTROL DE CALIDAD
+# ==========================================================================
+def detectar_cambios_de_referencia(niveles: pd.DataFrame, estacion: str, vecina: str, desfase: int,
+                                   ventana: int = 15, umbral: float = 0.5,
+                                   maximo_hueco_dias: int = 7, veces_lo_normal: float = 5.0) -> pd.DataFrame:
+    """Busca saltos bruscos (posibles cambios del cero de la regla) en una estación.
+
+    Idea: una estación y su vecina suben y bajan juntas. Si explicamos la estación
+    con una recta a partir de la vecina, el residuo cambia muy poco de un día a
+    otro. Un cambio de referencia es un escalón: el residuo salta de golpe y se
+    queda en el nuevo valor.
+
+    1. Ajustar ``estacion(t) ≈ a + b * vecina(t + desfase)`` y calcular el residuo
+       en los días con dato en ambas.
+    2. Salto diario: diferencia entre el residuo de un día observado y el anterior.
+    3. Salto sostenido: mediana de los ``ventana`` residuos siguientes menos la de
+       los ``ventana`` anteriores.
+    4. Salto aislado: el salto diario debe ser al menos ``veces_lo_normal`` veces la
+       mediana de los saltos diarios de los días cercanos. Un cambio de regla es un
+       escalón entre días tranquilos; en una crecida rápida todos los días cambian mucho.
+    Se reporta el día si se cumplen las tres condiciones (un dato aislado erróneo
+    no cumple la 3; una deriva lenta no cumple la 2; una crecida no cumple la 4).
+    5. Además, no se evalúan saltos tras huecos de más de ``maximo_hueco_dias``: en un
+       hueco largo el río cambia mucho y eso se confundiría con un escalón.
+
+    Args:
+        niveles: niveles crudos (pueden tener NaN).
+        estacion: estación a revisar.
+        vecina: estación de comparación.
+        desfase: días que tarda la onda entre ``estacion`` y ``vecina``.
+        ventana: número de días observados a cada lado para el salto sostenido.
+        umbral: salto mínimo (m) para reportar.
+        maximo_hueco_dias: hueco máximo entre dos días observados para comparar.
+        veces_lo_normal: cuántas veces mayor que lo habitual debe ser el salto diario.
+
+    Returns:
+        DataFrame con columnas ``Estacion``, ``Fecha`` y ``Salto`` (m). Si el salto
+        cae dentro de un hueco, la fecha es el primer día con dato después del hueco.
+    """
+    serie = niveles[estacion]
+    referencia = niveles[vecina].shift(-desfase)
+
+    ambos_observados = serie.notna() & referencia.notna()
+    pendiente, intercepto = np.polyfit(referencia[ambos_observados], serie[ambos_observados], 1)
+    residuo = serie - (intercepto + pendiente * referencia)
+    residuo = residuo[ambos_observados]
+
+    salto_diario = residuo.diff()
+    dias_desde_anterior = residuo.index.to_series().diff().dt.days
+    mediana_antes = residuo.rolling(ventana).median().shift(1)
+    mediana_despues = residuo.iloc[::-1].rolling(ventana).median().iloc[::-1]
+    salto_sostenido = mediana_despues - mediana_antes
+
+    sin_hueco_largo = dias_desde_anterior <= maximo_hueco_dias
+
+    salto_diario_habitual = salto_diario.abs().rolling(2 * ventana + 1, center=True, min_periods=ventana).median()
+    # Si entre dos datos hay días sin medir, lo "habitual" se multiplica por esos días
+    es_aislado = salto_diario.abs() > veces_lo_normal * salto_diario_habitual * dias_desde_anterior
+
+    es_salto = (salto_diario.abs() > umbral) & (salto_sostenido.abs() > umbral) & es_aislado & sin_hueco_largo
+    filas = []
+    for fecha in residuo.index[es_salto.to_numpy()]:
+        filas.append({"Estacion": estacion, "Fecha": fecha, "Salto": round(float(salto_sostenido[fecha]), 2)})
+    detectados = pd.DataFrame(filas, columns=["Estacion", "Fecha", "Salto"])
+    detectados["Fecha"] = pd.to_datetime(detectados["Fecha"])
+    return detectados
+
+
+def revisar_calidad(niveles: pd.DataFrame, tolerancia_dias: int = 7) -> pd.DataFrame:
+    """Detecta saltos en todas las estaciones comparando con sus dos vecinas (``VECINAS_CONTROL``).
+
+    Un salto queda ``Confirmado`` si se detecta frente a TODAS las vecinas de la
+    estación con una diferencia de fechas de como mucho ``tolerancia_dias``.
+    Los no confirmados suelen ser "reflejos" de un salto de la vecina o efectos
+    de un hueco largo; se listan para revisarlos a mano.
+
+    Returns:
+        DataFrame con columnas ``Estacion``, ``Vecina``, ``Fecha``, ``Salto`` y ``Confirmado``.
+    """
+    filas = []
+    for estacion in ESTACIONES:
+        detecciones_por_vecina = []
+        for vecina, desfase in VECINAS_CONTROL[estacion]:
+            detectados = detectar_cambios_de_referencia(niveles, estacion, vecina, desfase)
+            detectados["Vecina"] = vecina
+            detecciones_por_vecina.append(detectados)
+
+        for detectados in detecciones_por_vecina:
+            for _, fila in detectados.iterrows():
+                confirmado = True
+                for otras in detecciones_por_vecina:
+                    distancia_dias = (otras["Fecha"] - fila["Fecha"]).abs().dt.days
+                    if not (distancia_dias <= tolerancia_dias).any():
+                        confirmado = False
+                filas.append({
+                    "Estacion": estacion,
+                    "Vecina": fila["Vecina"],
+                    "Fecha": fila["Fecha"],
+                    "Salto": fila["Salto"],
+                    "Confirmado": confirmado,
+                })
+    return pd.DataFrame(filas, columns=["Estacion", "Vecina", "Fecha", "Salto", "Confirmado"])
+
+
+def corregir_cambios_de_referencia(niveles: pd.DataFrame, cambios: list) -> pd.DataFrame:
+    """Lleva cada serie a su referencia más reciente.
+
+    Si a partir de ``fecha`` la regla marca ``salto`` metros distinto, se suma
+    ``salto`` a todos los valores ANTERIORES a esa fecha. Así la serie completa
+    queda en la referencia actual (la de los umbrales de alerta vigentes).
+
+    Args:
+        niveles: niveles crudos.
+        cambios: lista de tuplas ``(estacion, fecha, salto)`` confirmadas.
+
+    Returns:
+        Copia corregida de ``niveles``.
+    """
+    corregidos = niveles.copy()
+    for estacion, fecha, salto in cambios:
+        antes = corregidos.index < pd.Timestamp(fecha)
+        corregidos.loc[antes, estacion] = corregidos.loc[antes, estacion] + salto
+    return corregidos
+
+
+def imputar_huecos(niveles: pd.DataFrame) -> tuple:
+    """Rellena los NaN por interpolación temporal y devuelve qué días eran observados.
+
+    Returns:
+        Tupla ``(niveles_imputados, observados)``; ``observados`` es un DataFrame
+        booleano con ``True`` donde había un dato real.
+    """
+    observados = niveles.notna()
+    imputados = niveles.interpolate(method="time", limit_direction="both")
+    return imputados, observados
+
+
+def cargar_datos(ruta=RUTA_DATOS) -> tuple:
+    """Lee, corrige los cambios de referencia confirmados e imputa los huecos.
+
+    Returns:
+        Tupla ``(niveles, observados)`` (ver :func:`imputar_huecos`).
+    """
+    crudos = leer_excel(ruta)
+    corregidos = corregir_cambios_de_referencia(crudos, CAMBIOS_DE_REFERENCIA)
+    niveles, observados = imputar_huecos(corregidos)
+    return niveles, observados
+
+
+# ==========================================================================
+# 3) CALENDARIO Y CLIMATOLOGÍA ARMÓNICA
+# ==========================================================================
+def variables_calendario(fechas: pd.DatetimeIndex, armonicos: int) -> pd.DataFrame:
+    """Seno y coseno del día del año: sen(2πk·d/N), cos(2πk·d/N) para k = 1..armonicos.
+
+    Con estas variables el 31 de diciembre y el 1 de enero quedan "cerca", algo que
+    el número de día (365 frente a 1) no consigue.
+    """
+    dia = fechas.dayofyear.to_numpy()
+    dias_del_anio = np.where(fechas.is_leap_year, 366, 365)
+    calendario = pd.DataFrame(index=fechas)
+    for k in range(1, armonicos + 1):
+        angulo = 2 * np.pi * k * dia / dias_del_anio
+        calendario["sen_" + str(k)] = np.sin(angulo)
+        calendario["cos_" + str(k)] = np.cos(angulo)
+    return calendario
+
+
+def ajustar_climatologia(serie: pd.Series, observados: pd.Series, armonicos: int = ARMONICOS_CLIMATOLOGIA) -> np.ndarray:
+    """Ajusta el ciclo anual medio (regresión armónica) usando SOLO días observados de train.
+
+    Modelo: nivel ≈ c0 + Σ_k [a_k·sen(2πk·d/N) + b_k·cos(2πk·d/N)].
+
+    Returns:
+        Coeficientes ``[c0, a_1, b_1, ..., a_K, b_K]``.
+    """
+    en_train = serie.index <= pd.Timestamp(FECHA_FIN_TRAIN)
+    usar = en_train & observados.to_numpy()
+    matriz = variables_calendario(serie.index[usar], armonicos).to_numpy()
+    matriz = np.column_stack([np.ones(len(matriz)), matriz])
+    coeficientes, _, _, _ = np.linalg.lstsq(matriz, serie.to_numpy()[usar], rcond=None)
+    return coeficientes
+
+
+def evaluar_climatologia(coeficientes: np.ndarray, fechas: pd.DatetimeIndex) -> np.ndarray:
+    """Valor de la climatología armónica en las fechas pedidas."""
+    armonicos = (len(coeficientes) - 1) // 2
+    matriz = variables_calendario(fechas, armonicos).to_numpy()
+    matriz = np.column_stack([np.ones(len(matriz)), matriz])
+    return matriz @ coeficientes
+
+
+def ajustar_climatologias(niveles: pd.DataFrame, observados: pd.DataFrame) -> dict:
+    """Climatología de cada estación: ``{estacion: coeficientes}``."""
+    climatologias = {}
+    for estacion in ESTACIONES:
+        climatologias[estacion] = ajustar_climatologia(niveles[estacion], observados[estacion])
+    return climatologias
+
+
+# ==========================================================================
+# 4) TABLA DE VARIABLES (79) Y OBJETIVO
+# ==========================================================================
+def construir_tabla(niveles: pd.DataFrame, observados: pd.DataFrame, climatologias: dict,
+                    estacion_objetivo: str, horizonte: int) -> pd.DataFrame:
+    """Construye la tabla supervisada para pronosticar ``estacion_objetivo`` a ``horizonte`` días.
+
+    Cada fila es un día de emisión t. Las variables solo usan datos hasta t:
+
+    - Cíclicas (7): seno/coseno del día del año en t + h (k = 1..3) y el cambio
+      que espera la climatología entre t y t + h.
+    - Rezagos (40): nivel de cada estación en t - L.
+    - Tendencias (20): y(t) - y(t - w) de cada estación.
+    - Suavizado (12): medias móviles de 7 y 30 días y anomalía (nivel - climatología).
+
+    Objetivo: ``cambio = y(t + h) - y(t)`` de la estación objetivo.
+
+    Args:
+        niveles: niveles imputados (sin NaN, frecuencia diaria).
+        observados: máscara de días observados.
+        climatologias: salida de :func:`ajustar_climatologias`.
+        estacion_objetivo: estación a pronosticar.
+        horizonte: días de anticipación h.
+
+    Returns:
+        DataFrame indexado por la fecha de emisión t con las variables y ``COLUMNAS_META``.
+    """
+    fechas = niveles.index
+    fechas_objetivo = fechas + pd.Timedelta(days=horizonte)
+    tabla = pd.DataFrame(index=fechas)
+
+    # --- Cíclicas: se evalúan en la fecha objetivo (se conocen de antemano) ---
+    calendario = variables_calendario(fechas_objetivo, ARMONICOS_CALENDARIO)
+    for columna in calendario.columns:
+        tabla["calendario_" + columna] = calendario[columna].to_numpy()
+    coeficientes_objetivo = climatologias[estacion_objetivo]
+    climatologia_hoy = evaluar_climatologia(coeficientes_objetivo, fechas)
+    climatologia_futura = evaluar_climatologia(coeficientes_objetivo, fechas_objetivo)
+    tabla["climatologia_cambio_esperado"] = climatologia_futura - climatologia_hoy
+
+    # --- Rezagos, tendencias y suavizado de las cuatro estaciones ---
+    for estacion in ESTACIONES:
+        serie = niveles[estacion]
+        for rezago in REZAGOS:
+            tabla[estacion + "_rezago_" + str(rezago)] = serie.shift(rezago)
+        for ventana in VENTANAS_TENDENCIA:
+            tabla[estacion + "_tendencia_" + str(ventana)] = serie - serie.shift(ventana)
+        for ventana in VENTANAS_MEDIA_MOVIL:
+            tabla[estacion + "_media_" + str(ventana)] = serie.rolling(ventana).mean()
+        climatologia_estacion = evaluar_climatologia(climatologias[estacion], fechas)
+        tabla[estacion + "_anomalia"] = serie - climatologia_estacion
+
+    # --- Objetivo e información para evaluar ---
+    serie_objetivo = niveles[estacion_objetivo]
+    observado_objetivo = observados[estacion_objetivo]
+    tabla["fecha_objetivo"] = fechas_objetivo
+    tabla["nivel_actual"] = serie_objetivo
+    tabla["nivel_objetivo"] = serie_objetivo.shift(-horizonte)
+    tabla["cambio"] = tabla["nivel_objetivo"] - tabla["nivel_actual"]
+    # [JUSTIFICACIÓN]: un día imputado se rellenó mirando datos posteriores. Para que la
+    # evaluación sea honesta, solo cuentan las filas con y(t) e y(t + h) observados.
+    tabla["observado"] = observado_objetivo & observado_objetivo.shift(-horizonte, fill_value=False)
+
+    # Se pierden los primeros 30 días (sin historia) y los últimos h (sin objetivo)
     tabla = tabla.dropna()
     return tabla
 
 
-def preparar_estacion(df: pd.DataFrame, estacion: str) -> dict:
-    """Prepara los datos de una estación para entrenar cualquier modelo.
+def nombres_variables(tabla: pd.DataFrame) -> list:
+    """Nombres de las columnas que son variables de entrada (todo menos ``COLUMNAS_META``)."""
+    variables = []
+    for columna in tabla.columns:
+        if columna not in COLUMNAS_META:
+            variables.append(columna)
+    return variables
 
-    Args:
-        df: DataFrame devuelto por :func:`cargar_datos`.
-        estacion: nombre de la columna de la estación (ej. ``"Palua"``).
+
+def grupos_de_variables(variables: list, estacion_objetivo: str) -> dict:
+    """Clasifica las variables en los grupos del análisis de contribución (Figura 8 del PDF).
+
+    Returns:
+        ``{"ciclicas": [...], "propias": [...], "otras_estaciones": [...]}``.
+    """
+    grupos = {"ciclicas": [], "propias": [], "otras_estaciones": []}
+    for variable in variables:
+        if variable.startswith("calendario_") or variable.startswith("climatologia_"):
+            grupos["ciclicas"].append(variable)
+        elif variable.startswith(estacion_objetivo + "_"):
+            grupos["propias"].append(variable)
+        else:
+            grupos["otras_estaciones"].append(variable)
+    return grupos
+
+
+# ==========================================================================
+# 5) SPLIT CRONOLÓGICO Y ESCALADO
+# ==========================================================================
+def dividir_por_fecha(tabla: pd.DataFrame) -> tuple:
+    """Divide según la fecha objetivo: train ≤ 2014, validación 2015-2019, prueba ≥ 2020."""
+    fin_train = pd.Timestamp(FECHA_FIN_TRAIN)
+    fin_val = pd.Timestamp(FECHA_FIN_VAL)
+    fecha_objetivo = tabla["fecha_objetivo"]
+
+    tabla_train = tabla[fecha_objetivo <= fin_train]
+    tabla_val = tabla[(fecha_objetivo > fin_train) & (fecha_objetivo <= fin_val)]
+    tabla_test = tabla[fecha_objetivo > fin_val]
+    return tabla_train, tabla_val, tabla_test
+
+
+def preparar_datos(niveles: pd.DataFrame, observados: pd.DataFrame, estacion_objetivo: str,
+                   horizonte: int) -> dict:
+    """Prepara los conjuntos de una estación y un horizonte para cualquier modelo tabular.
 
     Returns:
         Diccionario con:
-            - ``serie``: serie completa en metros (sin escalar).
-            - ``escalador``: MinMaxScaler ajustado solo con train.
-            - ``x_train``, ``y_train``, ``x_val``, ``y_val``, ``x_test``, ``y_test``:
-              lags y objetivo ESCALADOS (valores entre ~0 y 1).
-            - ``fechas_test``: fechas del conjunto de prueba.
-            - ``y_test_metros``: valores reales de test en metros (para evaluar).
-            - ``fecha_fin_train``, ``fecha_fin_val``: fechas de corte del split.
+            - ``x_train``, ``x_val``, ``x_test``: variables ESCALADAS (Z-Score ajustado con train).
+            - ``y_train``, ``y_val``, ``y_test``: cambio y(t + h) - y(t) en metros.
+            - ``tabla_train``, ``tabla_val``, ``tabla_test``: tablas completas sin escalar
+              (incluyen ``nivel_actual``, ``nivel_objetivo``, ``observado`` y ``fecha_objetivo``).
+            - ``escalador``, ``variables``, ``climatologias``, ``estacion``, ``horizonte``.
     """
-    serie = df[estacion]
+    climatologias = ajustar_climatologias(niveles, observados)
+    tabla = construir_tabla(niveles, observados, climatologias, estacion_objetivo, horizonte)
+    variables = nombres_variables(tabla)
+    tabla_train, tabla_val, tabla_test = dividir_por_fecha(tabla)
 
-    # --- 1) Puntos de corte cronológicos 70 / 15 / 15 (NUNCA aleatorio) ---
-    total_dias = len(serie)
-    indice_fin_train = int(total_dias * PORCENTAJE_TRAIN)
-    indice_fin_val = int(total_dias * (PORCENTAJE_TRAIN + PORCENTAJE_VAL))
-    fecha_fin_train = serie.index[indice_fin_train - 1]
-    fecha_fin_val = serie.index[indice_fin_val - 1]
-
-    # --- 2) Escalado Min-Max ajustado SOLO con train (evita data leakage) ---
-    valores_train = serie.iloc[:indice_fin_train].to_numpy().reshape(-1, 1)
-    escalador = MinMaxScaler()
-    escalador.fit(valores_train)
-
-    valores_escalados = escalador.transform(serie.to_numpy().reshape(-1, 1))
-    serie_escalada = pd.Series(valores_escalados.ravel(), index=serie.index)
-
-    # Guardamos el escalador para poder desnormalizar más tarde (por ejemplo en la app)
+    # Escalado Z-Score ajustado SOLO con train (evita data leakage)
+    escalador = StandardScaler()
+    escalador.fit(tabla_train[variables])
     CARPETA_ESCALADORES.mkdir(parents=True, exist_ok=True)
-    joblib.dump(escalador, CARPETA_ESCALADORES / (estacion + "_minmax.joblib"))
-
-    # --- 3) Tabla supervisada con lags ---
-    tabla = crear_lags(serie_escalada)
-    columnas_lags = []
-    for k in range(1, NUMERO_DE_LAGS + 1):
-        columnas_lags.append("lag_" + str(k))
-
-    # --- 4) Separar train / val / test según las fechas de corte ---
-    tabla_train = tabla[tabla.index <= fecha_fin_train]
-    tabla_val = tabla[(tabla.index > fecha_fin_train) & (tabla.index <= fecha_fin_val)]
-    tabla_test = tabla[tabla.index > fecha_fin_val]
+    nombre_archivo = estacion_objetivo + "_h" + str(horizonte) + "_zscore.joblib"
+    joblib.dump(escalador, CARPETA_ESCALADORES / nombre_archivo)
 
     datos = {
-        "estacion": estacion,
-        "serie": serie,
+        "estacion": estacion_objetivo,
+        "horizonte": horizonte,
+        "variables": variables,
+        "climatologias": climatologias,
         "escalador": escalador,
-        "x_train": tabla_train[columnas_lags],
-        "y_train": tabla_train["objetivo"],
-        "x_val": tabla_val[columnas_lags],
-        "y_val": tabla_val["objetivo"],
-        "x_test": tabla_test[columnas_lags],
-        "y_test": tabla_test["objetivo"],
-        "fechas_test": tabla_test.index,
-        "y_test_metros": serie.loc[tabla_test.index].to_numpy(),
-        "fecha_fin_train": fecha_fin_train,
-        "fecha_fin_val": fecha_fin_val,
+        "tabla_train": tabla_train,
+        "tabla_val": tabla_val,
+        "tabla_test": tabla_test,
     }
+    for nombre, tabla_conjunto in [("train", tabla_train), ("val", tabla_val), ("test", tabla_test)]:
+        valores_escalados = escalador.transform(tabla_conjunto[variables])
+        datos["x_" + nombre] = pd.DataFrame(valores_escalados, index=tabla_conjunto.index, columns=variables)
+        datos["y_" + nombre] = tabla_conjunto["cambio"]
     return datos
 
 
-def invertir_escala(escalador: MinMaxScaler, valores_escalados) -> np.ndarray:
-    """Convierte valores escalados (0-1) de vuelta a metros.
-
-    Args:
-        escalador: el MinMaxScaler usado en :func:`preparar_estacion`.
-        valores_escalados: array o lista con predicciones escaladas.
-
-    Returns:
-        Array 1D con los valores en metros.
-    """
-    valores_2d = np.asarray(valores_escalados, dtype=float).reshape(-1, 1)
-    valores_metros = escalador.inverse_transform(valores_2d)
-    return valores_metros.ravel()
+def cambio_a_nivel(nivel_actual, cambio_predicho) -> np.ndarray:
+    """Reconstruye el nivel pronosticado: ŷ(t + h) = y(t) + cambio predicho."""
+    nivel = np.asarray(nivel_actual, dtype=float) + np.asarray(cambio_predicho, dtype=float)
+    return nivel
 
 
 if __name__ == "__main__":
     # Prueba rápida del módulo: python -m src.preprocessing
-    df = cargar_datos()
-    print("Datos cargados:", df.shape, "| NaN restantes:", int(df.isna().sum().sum()))
+    crudos = leer_excel()
+    print("Datos crudos:", crudos.shape, "| NaN por estación:", crudos.isna().sum().to_dict())
+    print("\nSaltos detectados (control de calidad):")
+    print(revisar_calidad(crudos).to_string(index=False))
 
-    for estacion in ESTACIONES:
-        datos = preparar_estacion(df, estacion)
+    niveles, observados = cargar_datos()
+    print("\nNaN restantes tras imputar:", int(niveles.isna().sum().sum()))
 
-        # Comprobaciones: el orden temporal se respeta y la escala se invierte bien
-        assert datos["y_train"].index.max() < datos["y_val"].index.min()
-        assert datos["y_val"].index.max() < datos["y_test"].index.min()
-        recuperado = invertir_escala(datos["escalador"], datos["y_test"].to_numpy())
-        assert np.allclose(recuperado, datos["y_test_metros"])
-
-        print(
-            estacion.ljust(15),
-            "train =", len(datos["y_train"]),
-            "val =", len(datos["y_val"]),
-            "test =", len(datos["y_test"]),
-        )
+    for estacion in ESTACIONES_OBJETIVO:
+        for horizonte in HORIZONTES:
+            datos = preparar_datos(niveles, observados, estacion, horizonte)
+            assert datos["tabla_train"]["fecha_objetivo"].max() < datos["tabla_val"]["fecha_objetivo"].min()
+            assert datos["tabla_val"]["fecha_objetivo"].max() < datos["tabla_test"]["fecha_objetivo"].min()
+            print(
+                estacion.ljust(15), "h =", str(horizonte).rjust(2),
+                "| variables =", len(datos["variables"]),
+                "| train =", len(datos["y_train"]),
+                "val =", len(datos["y_val"]),
+                "test =", len(datos["y_test"]),
+                "(observados:", str(int(datos["tabla_test"]["observado"].sum())) + ")",
+            )
     print("Preprocesamiento validado correctamente.")
