@@ -14,7 +14,8 @@ De aguas arriba a aguas abajo: `Ayacucho`, `Caicara`, `Ciudad_Bolivar`, `Palua` 
 - Las cuatro estaciones se usan como variables de entrada.
 
 ## Datos
-- Mientras no exista el Excel real, usar `create_dummy_data.py` → `data/datos_rios.xlsx`.
+- Datos reales: `data/DATOS RIO ORINOCO.xlsx`, hoja `Entrenar` (2009-01-01 a 2025-02-24; configurable en `src/configuracion.py`).
+- `create_dummy_data.py` → `data/datos_rios.xlsx` queda solo para probar el control de calidad (saltos conocidos).
 - Columna `Fecha` diaria (1974-01-01 a 2025-12-31) + una columna numérica por estación (niveles en metros).
 - El dataset simulado reproduce lo descrito en el PDF: ciclo anual con máximo en agosto y mínimo en marzo,
   onda de crecida que viaja aguas abajo (Ayacucho → Ciudad Bolívar ≈ 18 días, Caicara → Ciudad Bolívar ≈ 4 días,
@@ -58,7 +59,7 @@ pytest.ini
    rezagos y(t−L) con L ∈ {0, 1, 2, 3, 5, 7, 10, 15, 20, 30}, tendencias Δw = y(t) − y(t−w) con
    w ∈ {1, 3, 7, 15, 30}, medias móviles de 7 y 30 días y anomalía. Rezagos, tendencias y suavizado se calculan
    para las cuatro estaciones.
-4. **Split cronológico estricto por años:** train 1974–2014, validación 2015–2019, prueba 2020–2025 (según la
+4. **Split cronológico estricto por años:** train 2009–2016, validación 2017–2019, prueba 2020–2025 (según la
    fecha objetivo t+h). **Nunca** mezclar aleatoriamente. La climatología armónica y los escaladores
    (Z-Score, guardados con joblib) se ajustan **solo con train** para evitar *data leakage*.
    Todos los modelos se entrenan con train; validación sirve para *early stopping*, selección y para ajustar el ensamble.

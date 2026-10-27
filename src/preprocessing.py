@@ -19,8 +19,8 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 from src.configuracion import (
-    ARMONICOS_CALENDARIO, ARMONICOS_CLIMATOLOGIA, CAMBIOS_DE_REFERENCIA, CARPETA_ESCALADORES,
-    ESTACIONES, ESTACIONES_OBJETIVO, FECHA_FIN_TRAIN, FECHA_FIN_VAL, HORIZONTES, REZAGOS, RUTA_DATOS,
+    ARMONICOS_CALENDARIO, ARMONICOS_CLIMATOLOGIA, CAMBIOS_DE_REFERENCIA, CARPETA_ESCALADORES, COLUMNAS_EXCEL,
+    ESTACIONES, ESTACIONES_OBJETIVO, FECHA_FIN_TRAIN, FECHA_FIN_VAL, HOJA_DATOS, HORIZONTES, REZAGOS, RUTA_DATOS,
     VECINAS_CONTROL, VENTANAS_MEDIA_MOVIL, VENTANAS_TENDENCIA,
 )
 
@@ -31,19 +31,24 @@ COLUMNAS_META = ["fecha_objetivo", "nivel_actual", "nivel_objetivo", "cambio", "
 # ==========================================================================
 # 1) CARGA
 # ==========================================================================
-def leer_excel(ruta=RUTA_DATOS) -> pd.DataFrame:
-    """Lee el Excel y devuelve un DataFrame con índice diario continuo.
+def leer_excel(ruta=RUTA_DATOS, hoja=HOJA_DATOS, columnas=COLUMNAS_EXCEL) -> pd.DataFrame:
+    """Lee la hoja del Excel y devuelve un DataFrame con índice diario continuo.
 
-    Las fechas repetidas se eliminan (se conserva la primera) y las fechas que no
-    aparecen en el archivo se añaden como filas con NaN.
+    Las fechas repetidas se eliminan (se conserva la primera), las fechas que no
+    aparecen en el archivo se añaden como filas con NaN y se descartan las filas
+    finales sin ningún dato (días futuros ya listados en el Excel): imputarlas
+    inventaría niveles después del último dato real.
 
     Args:
         ruta: ruta al Excel con la columna ``Fecha`` y una columna por estación.
+        hoja: nombre de la hoja a leer.
+        columnas: ``{encabezado del Excel: estación}``; solo se leen esas columnas.
 
     Returns:
         DataFrame con índice ``Fecha`` (frecuencia diaria) y una columna por estación.
     """
-    tabla = pd.read_excel(ruta)
+    tabla = pd.read_excel(ruta, sheet_name=hoja, usecols=["Fecha"] + list(columnas))
+    tabla = tabla.rename(columns=columnas)
     tabla["Fecha"] = pd.to_datetime(tabla["Fecha"])
     tabla = tabla.set_index("Fecha")
     tabla = tabla.sort_index()
@@ -51,6 +56,7 @@ def leer_excel(ruta=RUTA_DATOS) -> pd.DataFrame:
     fechas_repetidas = tabla.index.duplicated(keep="first")
     tabla = tabla[~fechas_repetidas]
     tabla = tabla.asfreq("D")
+    tabla = tabla.loc[:tabla.last_valid_index()]
     return tabla[ESTACIONES]
 
 
@@ -192,13 +198,13 @@ def imputar_huecos(niveles: pd.DataFrame) -> tuple:
     return imputados, observados
 
 
-def cargar_datos(ruta=RUTA_DATOS) -> tuple:
+def cargar_datos(ruta=RUTA_DATOS, hoja=HOJA_DATOS, columnas=COLUMNAS_EXCEL) -> tuple:
     """Lee, corrige los cambios de referencia confirmados e imputa los huecos.
 
     Returns:
         Tupla ``(niveles, observados)`` (ver :func:`imputar_huecos`).
     """
-    crudos = leer_excel(ruta)
+    crudos = leer_excel(ruta, hoja, columnas)
     corregidos = corregir_cambios_de_referencia(crudos, CAMBIOS_DE_REFERENCIA)
     niveles, observados = imputar_huecos(corregidos)
     return niveles, observados

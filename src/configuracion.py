@@ -9,7 +9,18 @@ from pathlib import Path
 # Rutas
 # --------------------------------------------------------------------------
 CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
-RUTA_DATOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
+RUTA_DATOS = CARPETA_PROYECTO / "data" / "DATOS RIO ORINOCO.xlsx"
+HOJA_DATOS = "Entrenar"             # hoja con una fila por día (2009-01-01 en adelante)
+# Encabezado de cada columna del Excel -> estación del proyecto
+COLUMNAS_EXCEL = {
+    "Puerto Ayacucho": "Ayacucho",
+    "Caicara el mini mini": "Caicara",
+    "Ciudad Bolívar": "Ciudad_Bolivar",
+    "Palúa": "Palua",
+}
+# Dataset simulado (create_dummy_data.py), usado por las pruebas del control de calidad
+RUTA_DATOS_SIMULADOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
+HOJA_DATOS_SIMULADOS = "Niveles"
 CARPETA_SALIDA = CARPETA_PROYECTO / "outputs"
 CARPETA_ESCALADORES = CARPETA_SALIDA / "escaladores"
 
@@ -64,8 +75,8 @@ HORIZONTES = list(range(1, HORIZONTE_MAXIMO + 1))   # 1, 2, ..., 15: todos se ev
 HORIZONTES_RESUMEN = [1, 3, 5, 7, 10, 15]           # los que se imprimen en consola
 
 # Partición cronológica según la FECHA OBJETIVO (t + h)
-FECHA_FIN_TRAIN = "2014-12-31"      # train: 1974-2014
-FECHA_FIN_VAL = "2019-12-31"        # validación: 2015-2019; prueba: 2020-2025
+FECHA_FIN_TRAIN = "2016-12-31"      # train: 2009-2016 (los datos reales empiezan en 2009)
+FECHA_FIN_VAL = "2019-12-31"        # validación: 2017-2019; prueba: 2020-feb 2025
 
 # --------------------------------------------------------------------------
 # Variables de entrada

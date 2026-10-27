@@ -3,8 +3,8 @@
 Idea: cada modelo se equivoca de forma distinta. Si combinamos sus pronósticos con
 buenos pesos, los errores se compensan en parte.
 
-- Los modelos base se entrenaron SOLO con train (1974-2014).
-- El metamodelo aprende los pesos con sus predicciones de VALIDACIÓN (2015-2019),
+- Los modelos base se entrenaron SOLO con train (2009-2016).
+- El metamodelo aprende los pesos con sus predicciones de VALIDACIÓN (2017-2019),
   datos que ningún modelo base usó para ajustar sus parámetros.
 - La evaluación final es en PRUEBA (2020-2025), igual que el resto.
 

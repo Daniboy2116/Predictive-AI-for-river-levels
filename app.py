@@ -114,7 +114,7 @@ st.set_page_config(page_title="Nivel del Orinoco", page_icon="🌊", layout="wid
 st.markdown(ESTILO, unsafe_allow_html=True)
 st.markdown('<div class="titulo"><h1>🌊 Pronóstico del nivel del Orinoco</h1>'
             '<p>Pronóstico directo a h días con estaciones aguas arriba · prueba 2020-2025 · '
-            'entrenamiento 1974-2014 · validación 2015-2019</p></div>', unsafe_allow_html=True)
+            'entrenamiento 2009-2016 · validación 2017-2019</p></div>', unsafe_allow_html=True)
 
 predicciones, metricas, contribucion = leer_resultados_en_cache(fechas_de_modificacion())
 if predicciones.empty:

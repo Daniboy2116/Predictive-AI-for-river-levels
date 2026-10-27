@@ -13,9 +13,8 @@ Después se puede abrir el dashboard con:  python -m streamlit run app.py
 import argparse
 import time
 
-import create_dummy_data
 from src import contribucion
-from src.configuracion import CAMBIOS_DE_REFERENCIA, HORIZONTE_PRINCIPAL, RUTA_DATOS
+from src.configuracion import CAMBIOS_DE_REFERENCIA, HORIZONTE_PRINCIPAL
 from src.evaluate import cargar_metricas
 from src.models import arima_model, ensamble, google_model, linea_base, lineal_model, neural_models, tree_models
 from src.preprocessing import leer_excel, revisar_calidad
@@ -60,15 +59,11 @@ def main() -> None:
     """Ejecuta el flujo completo y muestra el resumen a 15 días."""
     argumentos = leer_argumentos()
 
-    # 1) Si todavía no existe el Excel real, generamos el dataset simulado
-    if not RUTA_DATOS.exists():
-        create_dummy_data.main()
-
-    # 2) Control de calidad
+    # 1) Control de calidad (lee la hoja HOJA_DATOS de RUTA_DATOS)
     print("\n=== CONTROL DE CALIDAD ===")
     mostrar_control_de_calidad()
 
-    # 3) Entrenar y evaluar cada familia de modelos
+    # 2) Entrenar y evaluar cada familia de modelos
     inicio = time.perf_counter()
     for nombre_familia in FAMILIAS:
         if nombre_familia in argumentos.familias:
@@ -77,7 +72,7 @@ def main() -> None:
     duracion = time.perf_counter() - inicio
     print("\nTiempo total: %.1f minutos" % (duracion / 60))
 
-    # 4) Resumen: horizonte principal, ordenado de mejor a peor MAE
+    # 3) Resumen: horizonte principal, ordenado de mejor a peor MAE
     tabla = cargar_metricas()
     tabla = tabla[tabla["Horizonte"] == HORIZONTE_PRINCIPAL]
     tabla = tabla.sort_values(["Estacion", "MAE"])

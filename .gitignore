@@ -32,3 +32,7 @@ Thumbs.db
 # data/*.xlsx
 # === Pytest ===
 .pytest_cache/
+
+# === Archivos temporales de Office y carpetas intermedias ===
+~$*
+data/data new/

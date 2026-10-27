@@ -3,7 +3,7 @@
 Archivos generados (niveles siempre en metros, escala original):
 - ``outputs/predictions.csv``            -> predicciones de PRUEBA (2020-2025) y el pronóstico
   operativo desde el último dato (``Real`` vacío y ``Observado = False``).
-- ``outputs/predicciones_validacion.csv`` -> predicciones de VALIDACIÓN (2015-2019), para el ensamble.
+- ``outputs/predicciones_validacion.csv`` -> predicciones de VALIDACIÓN (2017-2019), para el ensamble.
   Ambos con columnas ``Fecha, Estacion, Modelo, Horizonte, Real, Prediccion, Observado``
   (``Fecha`` es la fecha objetivo t + h).
 - ``outputs/metrics.json`` -> ``{estacion: {modelo: {horizonte: {"MAE", "RMSE", "NSE"}}}}``.

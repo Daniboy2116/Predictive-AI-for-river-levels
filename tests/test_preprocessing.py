@@ -5,15 +5,22 @@ Ejecutar:  python -m pytest
 import numpy as np
 import pandas as pd
 
-from src.configuracion import ESTACIONES, FECHA_FIN_TRAIN, FECHA_FIN_VAL
+from src.configuracion import (
+    ESTACIONES, FECHA_FIN_TRAIN, FECHA_FIN_VAL, HOJA_DATOS_SIMULADOS, RUTA_DATOS_SIMULADOS,
+)
 from src.preprocessing import (
     ajustar_climatologias, cambio_a_nivel, cargar_datos, construir_tabla, grupos_de_variables, leer_excel,
     nombres_variables, preparar_datos, preparar_ventanas, revisar_calidad,
 )
 
-# Los datos se cargan una sola vez para todas las pruebas
+# Los datos reales (hoja Entrenar) se cargan una sola vez para todas las pruebas
 CRUDOS = leer_excel()
 NIVELES, OBSERVADOS = cargar_datos()
+
+# El control de calidad se prueba con el dataset simulado, cuyos saltos conocemos
+COLUMNAS_SIMULADAS = {estacion: estacion for estacion in ESTACIONES}
+SIMULADOS = leer_excel(RUTA_DATOS_SIMULADOS, HOJA_DATOS_SIMULADOS, COLUMNAS_SIMULADAS)
+NIVELES_SIMULADOS, OBSERVADOS_SIMULADOS = cargar_datos(RUTA_DATOS_SIMULADOS, HOJA_DATOS_SIMULADOS, COLUMNAS_SIMULADAS)
 
 
 def test_indice_diario_continuo():
@@ -23,9 +30,15 @@ def test_indice_diario_continuo():
     assert list(CRUDOS.columns) == ESTACIONES
 
 
+def test_no_se_imputan_dias_vacios_del_final():
+    """El Excel lista fechas posteriores al último dato: se descartan, el último día tiene dato."""
+    assert CRUDOS.iloc[-1].notna().all()
+    assert NIVELES.index.max() == CRUDOS.index.max()
+
+
 def test_control_de_calidad_detecta_los_saltos_simulados():
     """Solo se confirman los dos cambios de referencia de Ciudad Bolívar."""
-    revision = revisar_calidad(CRUDOS)
+    revision = revisar_calidad(SIMULADOS)
     confirmados = revision[revision["Confirmado"]]
     assert set(confirmados["Estacion"]) == {"Ciudad_Bolivar"}
 
@@ -40,7 +53,7 @@ def test_control_de_calidad_detecta_los_saltos_simulados():
 
 def test_correccion_elimina_los_saltos():
     """Después de corregir no queda ningún salto confirmado."""
-    corregidos_sin_imputar = NIVELES.where(OBSERVADOS)
+    corregidos_sin_imputar = NIVELES_SIMULADOS.where(OBSERVADOS_SIMULADOS)
     revision = revisar_calidad(corregidos_sin_imputar)
     assert not revision["Confirmado"].any()
 
@@ -72,7 +85,7 @@ def test_sin_fuga_de_informacion_futura():
 
 
 def test_split_por_fecha_objetivo():
-    """Train termina en 2014, validación cubre 2015-2019 y prueba empieza en 2020."""
+    """Train termina en 2016, validación cubre 2017-2019 y prueba empieza en 2020."""
     datos = preparar_datos(NIVELES, OBSERVADOS, "Palua", 15)
     fin_train = pd.Timestamp(FECHA_FIN_TRAIN)
     fin_val = pd.Timestamp(FECHA_FIN_VAL)
@@ -115,7 +128,7 @@ def test_reconstruccion_del_nivel():
 
 
 def test_ventanas_terminan_en_el_dia_de_emision():
-    """La última fila de cada ventana es el día t y los objetivos de train no pasan de 2014."""
+    """La última fila de cada ventana es el día t y los objetivos de train no pasan de 2016."""
     datos = preparar_ventanas(NIVELES, OBSERVADOS, "Ciudad_Bolivar", 60, 15)
     assert datos["ventanas"].shape[1:] == (60, 10)
 

@@ -65,7 +65,7 @@ Cada módulo de `src/models/` también se puede ejecutar solo, por ejemplo `pyth
 | Imputación | Interpolación temporal; las métricas se calculan **solo con días observados** |
 | Objetivo | Pronóstico directo: ŷ(t+h) = y(t) + f(x(t)); el modelo aprende el **cambio** a h días |
 | Variables (79) | Cíclicas (7), rezagos (40), tendencias (20) y suavizado (12) de las cuatro estaciones, todas conocidas en t |
-| Partición | Train 1974–2014 · validación 2015–2019 · prueba 2020–2025 (por fecha objetivo) |
+| Partición | Train 2009–2016 · validación 2017–2019 · prueba 2020–feb 2025 (por fecha objetivo) |
 | Sin fugas | Climatología y escaladores ajustados solo con train; prueba automática de fuga de información futura |
 | Métricas | MAE, RMSE, NSE (Nash-Sutcliffe) y mejora del MAE frente a la persistencia |
 
@@ -83,8 +83,9 @@ Cada módulo de `src/models/` también se puede ejecutar solo, por ejemplo `pyth
 
 ## Usar los datos reales
 
-1. Guardar el Excel en `data/datos_rios.xlsx` con una columna `Fecha` (diaria) y una columna por estación:
-   `Ayacucho`, `Caicara`, `Ciudad_Bolivar`, `Palua` (niveles en metros).
+1. Los datos reales están en `data/DATOS RIO ORINOCO.xlsx`, hoja `Entrenar` (columna `Fecha` diaria desde 2009-01-01
+   y una columna por estación, en metros). Hoja, ruta y correspondencia de encabezados: `src/configuracion.py`
+   (`RUTA_DATOS`, `HOJA_DATOS`, `COLUMNAS_EXCEL`). Las filas finales sin datos se ignoran.
 2. Ejecutar `python main.py --familias lineas_base`: el control de calidad lista los saltos detectados.
 3. Verificar cada salto confirmado con quien opera la estación y declararlo en `CAMBIOS_DE_REFERENCIA`
    (`src/configuracion.py`). Si el salto es real, se corrige; si no, se deja fuera de la lista.
@@ -93,8 +94,9 @@ Cada módulo de `src/models/` también se puede ejecutar solo, por ejemplo `pyth
 ## Estructura
 
 ```
-create_dummy_data.py        # datos simulados (mientras no estén los reales)
-data/datos_rios.xlsx
+create_dummy_data.py        # datos simulados (solo para las pruebas del control de calidad)
+data/DATOS RIO ORINOCO.xlsx # datos reales (hoja Entrenar)
+data/datos_rios.xlsx        # datos simulados
 src/configuracion.py        # estaciones, horizontes, fechas de corte, cambios de referencia
 src/preprocessing.py        # carga, control de calidad, imputación, climatología, variables, split, escalado
 src/evaluate.py             # métricas y exportación a outputs/
