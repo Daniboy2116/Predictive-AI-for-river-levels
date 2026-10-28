@@ -1,354 +1,809 @@
-"""Dashboard Streamlit: pronóstico del nivel del Orinoco y comparación de modelos.
-
-Ejecutar:  python -m streamlit run app.py
-(antes hay que generar los resultados con:  python main.py)
-"""
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.configuracion import (
-    CAMBIOS_DE_REFERENCIA, ESTACIONES, HORIZONTE_MAXIMO, HORIZONTE_PRINCIPAL, NOMBRES_ESTACIONES, UMBRALES_ALERTA,
+from src.backtesting import (
+    BacktestValidationError, cargar_datos_backtest, clasificar_temporada,
+    simular_evento,
 )
-from src.contribucion import RUTA_CONTRIBUCION, cargar_contribucion
-from src.evaluate import RUTA_METRICAS, RUTA_PREDICCIONES, cargar_metricas, cargar_predicciones
-from src.preprocessing import cargar_datos, leer_excel, revisar_calidad
+from src.configuracion import (
+    ESTACIONES,
+    ESTACIONES_OBJETIVO,
+    HORIZONTE_BACKTEST,
+    LOOKBACKS_BACKTEST,
+    MODO_PARTICION_BACKTEST,
+    NOMBRES_ESTACIONES,
+    PORCENTAJE_TRAIN_BACKTEST,
+    UMBRALES_ALERTA,
+    obtener_rango_holdout,
+)
+from src.inference import REGISTRO_MODELOS
 
 COLORES_MODELOS = {
-    "Persistencia": "#94a3b8", "Climatologia": "#64748b", "AnomaliaAmortiguada": "#cbd5e1",
-    "Ridge": "#38bdf8", "RandomForest": "#22c55e", "XGBoost": "#10b981", "LightGBM": "#a3e635",
-    "SARIMAX": "#f59e0b", "Prophet": "#fb923c", "LSTM": "#a78bfa", "CNN1D": "#f472b6",
-    "Transformer": "#60a5fa", "Ensamble": "#facc15",
+    "Persistencia": "#94a3b8",
+    "Climatologia": "#64748b",
+    "AnomaliaAmortiguada": "#cbd5e1",
+    "Ridge": "#38bdf8",
+    "RandomForest": "#22c55e",
+    "XGBoost": "#10b981",
+    "LightGBM": "#a3e635",
+    "SARIMAX": "#f59e0b",
+    "AutoARIMA": "#d97706",
+    "TimesFM": "#ef4444",
+    "Prophet": "#fb923c",
+    "LSTM": "#a78bfa",
+    "CNN1D": "#f472b6",
+    "Transformer": "#60a5fa",
+    "Ensamble": "#facc15",
 }
-COLORES_ESTACIONES = {"Ayacucho": "#a78bfa", "Caicara": "#38bdf8", "Ciudad_Bolivar": "#f59e0b", "Palua": "#22c55e"}
-MODELOS_POR_DEFECTO = ["Persistencia", "Ridge", "LightGBM", "Ensamble"]
-ESTILO = """
+
+COLORES_ESTACIONES = {
+    "Ayacucho": "#a78bfa",
+    "Caicara": "#38bdf8",
+    "Ciudad_Bolivar": "#f59e0b",
+    "Palua": "#22c55e",
+}
+
+ESTACIONES_GEO = {
+    "Ayacucho": {
+        "nombre": "Puerto Ayacucho",
+        "lat": 5.6606,
+        "lon": -67.6256,
+        "tipo": "Entrada (Aguas arriba)",
+        "descripcion": "Estación cabecera de la cuenca media. Tiempo de viaje a Caicara: ~14 días.",
+    },
+    "Caicara": {
+        "nombre": "Caicara del Orinoco",
+        "lat": 7.6228,
+        "lon": -66.1628,
+        "tipo": "Intermedia (Aguas arriba)",
+        "descripcion": "Punto de confluencia con el río Apure. Tiempo de viaje a Ciudad Bolívar: ~4 días.",
+    },
+    "Ciudad_Bolivar": {
+        "nombre": "Ciudad Bolívar",
+        "lat": 8.1406,
+        "lon": -63.5481,
+        "tipo": "Objetivo de Pronóstico",
+        "descripcion": "Estación hidrométrica histórica (Angostura). Umbral de alerta por crecida: 16.50 m.",
+    },
+    "Palua": {
+        "nombre": "Palúa (San Félix)",
+        "lat": 8.3567,
+        "lon": -62.6844,
+        "tipo": "Objetivo de Pronóstico",
+        "descripcion": "Confluencia del Río Caroní con el Orinoco en Ciudad Guayana.",
+    },
+}
+
+ESTILO_CSS = """
 <style>
-.stApp { background: radial-gradient(1200px 600px at 10% -10%, #0e3a5c 0%, transparent 60%),
-         linear-gradient(160deg, #050b18 0%, #0a1628 60%, #06101f 100%); color: #e2e8f0; }
-section[data-testid="stSidebar"] { background: rgba(10, 22, 40, .9); border-right: 1px solid rgba(56, 189, 248, .15); }
-.titulo h1 { font-size: 2.2rem; font-weight: 700; margin: 0;
-         background: linear-gradient(90deg, #38bdf8, #818cf8, #22d3ee); -webkit-background-clip: text;
-         -webkit-text-fill-color: transparent; }
-.titulo p { color: #94a3b8; margin-top: .2rem; }
-.tarjeta { background: rgba(255,255,255,.04); border: 1px solid rgba(56,189,248,.18);
-        border-radius: 16px; padding: 1rem 1.2rem; }
-.tarjeta .etiqueta { color: #94a3b8; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
-.tarjeta .valor { font-size: 1.6rem; font-weight: 700; color: #f1f5f9; }
-.tarjeta .detalle { color: #38bdf8; font-size: .85rem; }
+.stApp {
+    background: radial-gradient(1100px 550px at 10% -5%, #0c2d4a 0%, transparent 60%),
+                linear-gradient(160deg, #060b17 0%, #0a1526 50%, #060f1d 100%);
+    color: #f1f5f9;
+}
+section[data-testid="stSidebar"] {
+    background: rgba(10, 21, 38, 0.95);
+    border-right: 1px solid rgba(56, 189, 248, 0.18);
+}
+.header-container {
+    padding: 1.3rem 1.6rem;
+    border-radius: 16px;
+    background: linear-gradient(135deg, rgba(56, 189, 248, 0.12) 0%, rgba(99, 102, 241, 0.06) 100%);
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    margin-bottom: 1.5rem;
+}
+.header-container h1 {
+    font-size: 2.1rem;
+    font-weight: 800;
+    margin: 0;
+    background: linear-gradient(90deg, #38bdf8, #818cf8, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.header-container p {
+    color: #94a3b8;
+    margin: 0.3rem 0 0 0;
+    font-size: 0.95rem;
+}
+.geo-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(56, 189, 248, 0.15);
+    border-radius: 14px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 0.8rem;
+}
+.geo-card h4 {
+    margin: 0 0 0.3rem 0;
+    color: #38bdf8;
+    font-size: 1.05rem;
+}
+.geo-card p {
+    margin: 0;
+    color: #cbd5e1;
+    font-size: 0.88rem;
+}
+.badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    margin-bottom: 0.4rem;
+}
+.season-card {
+    padding: 1rem 1.2rem;
+    border-radius: 14px;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.metric-box {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(56, 189, 248, 0.15);
+    border-radius: 12px;
+    padding: 0.75rem 0.6rem;
+    text-align: center;
+    min-width: 0;
+    overflow: visible;
+}
+.metric-box h3 {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #38bdf8;
+    white-space: nowrap;
+}
+.metric-box p {
+    margin: 0.25rem 0 0 0;
+    color: #94a3b8;
+    font-size: 0.82rem;
+    line-height: 1.25;
+    word-wrap: break-word;
+}
 </style>
 """
 
 
-# --------------------------------------------------------------------------
-# Carga de datos (se guarda en caché para no leer los archivos en cada clic)
-# --------------------------------------------------------------------------
-def fechas_de_modificacion() -> tuple:
-    """Fecha de última modificación de cada archivo de resultados (0 si no existe)."""
-    fechas = []
-    for ruta in [RUTA_PREDICCIONES, RUTA_METRICAS, RUTA_CONTRIBUCION]:
-        if ruta.exists():
-            fechas.append(ruta.stat().st_mtime)
-        else:
-            fechas.append(0.0)
-    return tuple(fechas)
-
-
-def leer_resultados(fechas: tuple) -> tuple:
-    """Lee predicciones de prueba, métricas y contribución de variables desde ``outputs/``.
-
-    El argumento ``fechas`` no se usa dentro de la función: sirve para que la caché se
-    renueve sola cuando ``main.py`` vuelve a escribir los archivos.
-    """
-    predicciones = cargar_predicciones("prueba")
-    # Fecha de emisión = fecha objetivo - horizonte (el día en que se hizo el pronóstico)
-    predicciones["FechaEmision"] = predicciones["Fecha"] - pd.to_timedelta(predicciones["Horizonte"], unit="D")
-    return predicciones, cargar_metricas(), cargar_contribucion()
-
-
-def leer_niveles() -> tuple:
-    """Niveles corregidos e imputados y máscara de días observados (misma referencia que las predicciones)."""
-    return cargar_datos()
-
-
-def leer_datos_y_calidad() -> tuple:
-    """Lee el Excel crudo y la revisión de calidad (saltos detectados)."""
-    crudos = leer_excel()
-    return crudos, revisar_calidad(crudos)
-
-
-# [JUSTIFICACIÓN]: st.cache_data suele usarse como decorador; aquí lo aplicamos como una
-# función normal para mantener el estilo del proyecto (sin decoradores).
-leer_resultados_en_cache = st.cache_data(leer_resultados)
-leer_datos_y_calidad_en_cache = st.cache_data(leer_datos_y_calidad)
-leer_niveles_en_cache = st.cache_data(leer_niveles)
-
-
-def tarjeta(columna, etiqueta: str, valor: str, detalle: str) -> None:
-    """Dibuja una tarjeta con un indicador."""
-    html = ('<div class="tarjeta"><div class="etiqueta">' + etiqueta + '</div>'
-            '<div class="valor">' + valor + '</div><div class="detalle">' + detalle + '</div></div>')
-    columna.markdown(html, unsafe_allow_html=True)
-
-
-def nombre_estacion(estacion: str) -> str:
-    """Nombre bonito de una estación para mostrar."""
-    return NOMBRES_ESTACIONES[estacion]
-
-
-def estilo_grafica(figura: go.Figure, titulo: str, titulo_eje_y: str, altura: int = 480) -> None:
-    """Aplica el estilo oscuro común a todas las gráficas."""
-    figura.update_layout(
-        template="plotly_dark", height=altura, hovermode="x unified",
-        title=dict(text=titulo, x=0.01, y=0.98, yanchor="top", font=dict(size=17)),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(255,255,255,0.02)",
-        yaxis_title=titulo_eje_y, legend=dict(orientation="h", x=0, y=1.0, yanchor="bottom"),
-        margin=dict(l=10, r=10, t=95, b=10),
+def estilo_grafica(fig: go.Figure, titulo: str, eje_y: str = "Nivel (m)", altura: int = 520) -> None:
+    fig.update_layout(
+        template="plotly_dark",
+        height=altura,
+        hovermode="x unified",
+        hoverlabel=dict(
+            namelength=-1,
+            bgcolor="rgba(10, 21, 38, 0.95)",
+            bordercolor="rgba(56, 189, 248, 0.4)",
+            font=dict(size=12, color="#f8fafc"),
+        ),
+        title=dict(text=titulo, x=0.01, y=0.97, yanchor="top", font=dict(size=16, color="#f8fafc")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(255,255,255,0.015)",
+        yaxis=dict(title=eje_y, gridcolor="rgba(255,255,255,0.08)"),
+        xaxis=dict(gridcolor="rgba(255,255,255,0.08)"),
+        legend=dict(
+            orientation="h",
+            x=0.01,
+            y=1.08,
+            yanchor="bottom",
+            font=dict(size=12, color="#cbd5e1"),
+        ),
+        margin=dict(l=20, r=20, t=85, b=20),
     )
 
 
-# --------------------------------------------------------------------------
-# Página
-# --------------------------------------------------------------------------
-st.set_page_config(page_title="Nivel del Orinoco", page_icon="🌊", layout="wide")
-st.markdown(ESTILO, unsafe_allow_html=True)
-st.markdown('<div class="titulo"><h1>🌊 Pronóstico del nivel del Orinoco</h1>'
-            '<p>Pronóstico directo a h días con estaciones aguas arriba · prueba 2020-2025 · '
-            'entrenamiento 2009-2016 · validación 2017-2019</p></div>', unsafe_allow_html=True)
+@st.cache_data
+def obtener_datos_hidrologicos():
+    return cargar_datos_backtest()
 
-predicciones, metricas, contribucion = leer_resultados_en_cache(fechas_de_modificacion())
-if predicciones.empty:
-    st.warning("No hay resultados todavía. Ejecuta primero: `python main.py`")
-    st.stop()
 
-# ----------------------------------------------------------------- Barra lateral
+def construir_grafica_historica(
+    niveles: pd.DataFrame,
+    observados: pd.DataFrame,
+    estacion_sel: str,
+    inicio_holdout: pd.Timestamp,
+    fin_holdout: pd.Timestamp,
+) -> go.Figure:
+    """Construye la gráfica de series históricas delimitando con precisión el corte train/holdout."""
+    fig = go.Figure()
+
+    if estacion_sel == "Todas las estaciones":
+        for est in ESTACIONES:
+            col = COLORES_ESTACIONES.get(est, "#38bdf8")
+            nombre = NOMBRES_ESTACIONES.get(est, est)
+            s_obs = niveles[est].where(observados[est])
+            fig.add_trace(go.Scatter(
+                x=s_obs.index,
+                y=s_obs.to_numpy(),
+                name=nombre,
+                mode="lines",
+                line=dict(color=col, width=1.8),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
+            ))
+        titulo = "Serie Histórica del Nivel del Río Orinoco — Red de Monitoreo Completa"
+    else:
+        col = COLORES_ESTACIONES.get(estacion_sel, "#38bdf8")
+        nombre = NOMBRES_ESTACIONES.get(estacion_sel, estacion_sel)
+
+        # Segmento de entrenamiento (visto por los modelos)
+        mascara_train = (niveles.index < inicio_holdout) & observados[estacion_sel]
+        s_train = niveles.loc[mascara_train, estacion_sel]
+        if not s_train.empty:
+            fig.add_trace(go.Scatter(
+                x=s_train.index,
+                y=s_train.to_numpy(),
+                name=f"Entrenamiento: {nombre} (70%)",
+                mode="lines",
+                line=dict(color=col, width=2.0),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
+            ))
+
+        # Segmento Holdout (estrictamente no visto durante el entrenamiento)
+        mascara_holdout = (niveles.index >= inicio_holdout) & observados[estacion_sel]
+        s_holdout = niveles.loc[mascara_holdout, estacion_sel]
+        if not s_holdout.empty:
+            fig.add_trace(go.Scatter(
+                x=s_holdout.index,
+                y=s_holdout.to_numpy(),
+                name=f"Holdout Ciego: {nombre} (30% reservado)",
+                mode="lines",
+                line=dict(color="#94a3b8", width=1.8, dash="dot"),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
+            ))
+
+        if estacion_sel in UMBRALES_ALERTA:
+            umbral = UMBRALES_ALERTA[estacion_sel]
+            fig.add_hline(
+                y=umbral,
+                line=dict(color="#ef4444", dash="dash", width=1.8),
+                annotation_text=f"Cota de alerta: {umbral:.1f} m",
+                annotation_position="top left",
+                annotation_font=dict(color="#ef4444"),
+            )
+        titulo = f"Serie Histórica Observada y Partición — {nombre}"
+
+    # Línea vertical divisoria del Holdout
+    fig.add_vline(
+        x=inicio_holdout,
+        line=dict(color="#f59e0b", width=2, dash="dash"),
+        annotation_text="Línea de Partición (Inicio Holdout Ciego)",
+        annotation_position="top left",
+        annotation_font=dict(color="#f59e0b", size=11),
+    )
+
+    # Región sombreada del Holdout
+    fig.add_vrect(
+        x0=inicio_holdout,
+        x1=fin_holdout,
+        fillcolor="rgba(245, 158, 11, 0.08)",
+        line_width=1,
+        line_dash="dot",
+        line_color="rgba(245, 158, 11, 0.4)",
+        annotation_text="Conjunto Holdout (30% reservado para Backtesting)",
+        annotation_position="top right",
+        annotation_font=dict(size=11, color="#f59e0b"),
+    )
+
+    estilo_grafica(fig, titulo, "Nivel (m)", altura=520)
+    fig.update_layout(xaxis=dict(rangeslider=dict(visible=True, thickness=0.06)))
+    return fig
+
+
+def construir_grafica_evento(
+    historia: pd.DataFrame,
+    ground_truth: pd.DataFrame,
+    predicciones: pd.DataFrame,
+    fecha_origen: pd.Timestamp,
+    temporada: dict,
+    nombre_est: str,
+    nombre_modelo: str,
+) -> go.Figure:
+    """Construye la visualización interactiva del evento puntual con historia, punto de corte y predicción."""
+    fig = go.Figure()
+
+    # 1. Historia previa observada
+    hist_obs = historia[historia["Observado"]].sort_values("Fecha")
+    if not hist_obs.empty:
+        fig.add_trace(go.Scatter(
+            x=hist_obs["Fecha"],
+            y=hist_obs["Nivel"],
+            name="Historia observada",
+            mode="lines+markers",
+            line=dict(color="#94a3b8", width=2),
+            marker=dict(size=4),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
+        ))
+
+    # 2. Ground Truth futuro observado
+    gt_obs = ground_truth[ground_truth["Observado"]].sort_values("Fecha")
+    if not gt_obs.empty:
+        fig.add_trace(go.Scatter(
+            x=gt_obs["Fecha"],
+            y=gt_obs["Real"],
+            name="Nivel Real (Ground Truth)",
+            mode="lines+markers",
+            line=dict(color="#10b981", width=2.5),
+            marker=dict(size=6, symbol="circle"),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
+        ))
+
+    # 3. Predicciones del modelo
+    color_mod = COLORES_MODELOS.get(nombre_modelo, "#38bdf8")
+    pred_ord = predicciones.sort_values("Horizonte")
+    p1_6 = pred_ord[pred_ord["Horizonte"] <= 6]
+    p7_14 = pred_ord[pred_ord["Horizonte"] >= 7]
+
+    if not p1_6.empty:
+        fig.add_trace(go.Scatter(
+            x=p1_6["Fecha"],
+            y=p1_6["Prediccion"],
+            name=f"Pronóstico {nombre_modelo} (h=1..6)",
+            mode="lines+markers",
+            line=dict(color=color_mod, width=2, dash="solid"),
+            marker=dict(size=6),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
+        ))
+
+    if not p7_14.empty:
+        x_destacada = pd.concat([p1_6.tail(1), p7_14]) if not p1_6.empty else p7_14
+        fig.add_trace(go.Scatter(
+            x=x_destacada["Fecha"],
+            y=x_destacada["Prediccion"],
+            name=f"Pronóstico {nombre_modelo} (h=7..14 Prioritario)",
+            mode="lines+markers",
+            line=dict(color=color_mod, width=3.5, dash="solid"),
+            marker=dict(size=8, symbol="diamond"),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
+        ))
+
+    # 4. Línea de origen t0
+    t0_dt = pd.Timestamp(fecha_origen)
+    fig.add_vline(
+        x=t0_dt,
+        line=dict(color="#facc15", width=2, dash="dash"),
+        annotation_text="Inicio del pronóstico (t₀)",
+        annotation_position="top left",
+        annotation_font=dict(color="#facc15", size=11),
+    )
+
+    # 5. Sombreado para región prioritaria h=7..14
+    t7 = t0_dt + pd.Timedelta(days=7)
+    t14 = t0_dt + pd.Timedelta(days=14)
+    fig.add_vrect(
+        x0=t7,
+        x1=t14,
+        fillcolor="rgba(56, 189, 248, 0.08)",
+        line_width=1,
+        line_dash="dot",
+        line_color="rgba(56, 189, 248, 0.3)",
+        annotation_text="Inicio de evaluación prioritaria: h=7",
+        annotation_position="top right",
+        annotation_font=dict(size=10, color="#38bdf8"),
+    )
+
+    titulo = f"Simulación Histórica: {nombre_modelo} en {NOMBRES_ESTACIONES.get(nombre_est, nombre_est)} (t₀ = {t0_dt.strftime('%d/%m/%Y')})"
+    estilo_grafica(fig, titulo, "Nivel (m)", altura=480)
+    return fig
+
+
+def construir_mapa_cuenca() -> go.Figure:
+    lats = [info["lat"] for info in ESTACIONES_GEO.values()]
+    lons = [info["lon"] for info in ESTACIONES_GEO.values()]
+    textos = [f"<b>{info['nombre']}</b><br>{info['tipo']}<br>{info['descripcion']}" for info in ESTACIONES_GEO.values()]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scattergeo(
+        lon=lons,
+        lat=lats,
+        mode="lines",
+        line=dict(width=3.5, color="#38bdf8"),
+        name="Cauce Principal del Río Orinoco",
+        hoverinfo="none",
+    ))
+
+    colores_marcadores = ["#a78bfa", "#38bdf8", "#f59e0b", "#22c55e"]
+    simbolos = ["circle", "circle", "diamond", "diamond"]
+    tamanos = [14, 14, 18, 18]
+
+    fig.add_trace(go.Scattergeo(
+        lon=lons,
+        lat=lats,
+        mode="markers+text",
+        text=[info["nombre"] for info in ESTACIONES_GEO.values()],
+        textposition="top right",
+        textfont=dict(size=12, color="#f8fafc"),
+        hovertext=textos,
+        hoverinfo="text",
+        marker=dict(
+            size=tamanos,
+            color=colores_marcadores,
+            symbol=simbolos,
+            line=dict(width=2, color="#ffffff"),
+        ),
+        name="Estaciones de Monitoreo",
+    ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=540,
+        margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        geo=dict(
+            scope="south america",
+            center=dict(lat=7.0, lon=-65.0),
+            projection_scale=6.5,
+            showland=True,
+            landcolor="#0b172a",
+            showocean=True,
+            oceancolor="#070e1b",
+            showrivers=True,
+            rivercolor="#0ea5e9",
+            showlakes=True,
+            lakecolor="#070e1b",
+            showcountries=True,
+            countrycolor="#334155",
+            countrywidth=1,
+            subunitcolor="#1e293b",
+        ),
+        legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom"),
+    )
+    return fig
+
+
+st.set_page_config(page_title="Nivel del Orinoco - Pronósticos & Backtesting", page_icon="🌊", layout="wide")
+st.markdown(ESTILO_CSS, unsafe_allow_html=True)
+
+st.markdown("""
+<div class="header-container">
+    <h1>🌊 Sistema de Predicción de Niveles del Río Orinoco</h1>
+    <p>Visualización histórica y laboratorio interactivo de backtesting (1 a 14 días)</p>
+</div>
+""", unsafe_allow_html=True)
+
+niveles_datos, observados_datos = obtener_datos_hidrologicos()
+
+# Rango del holdout calculado cronológicamente (70% train / 30% holdout ciego)
+inicio_holdout_calc, fin_holdout_calc = obtener_rango_holdout(
+    niveles_datos, observados_datos, modo=MODO_PARTICION_BACKTEST, porcentaje_train=PORCENTAJE_TRAIN_BACKTEST,
+)
+ultimo_origen_valido = fin_holdout_calc - pd.Timedelta(days=HORIZONTE_BACKTEST)
+inicio_train = niveles_datos.index.min()
+fin_train = inicio_holdout_calc - pd.Timedelta(days=1)
+
+opciones_estacion = ["Todas las estaciones"] + ESTACIONES
+
 with st.sidebar:
-    st.header("Configuración")
-    estaciones_disponibles = []
-    for estacion in ESTACIONES:
-        if estacion in predicciones["Estacion"].unique():
-            estaciones_disponibles.append(estacion)
-    estacion = st.selectbox("Estación", estaciones_disponibles, format_func=nombre_estacion, key="estacion")
+    st.markdown("### 📍 Visualización Histórica")
+    seleccion_estacion = st.selectbox(
+        "Estación hidrológica",
+        opciones_estacion,
+        format_func=lambda e: "Todas las estaciones" if e == "Todas las estaciones" else NOMBRES_ESTACIONES.get(e, e),
+    )
 
-    horizontes = sorted(predicciones["Horizonte"].unique())
-    horizonte_inicial = HORIZONTE_PRINCIPAL
-    if horizonte_inicial not in horizontes:
-        horizonte_inicial = horizontes[-1]
-    horizonte = st.select_slider("Horizonte (días de anticipación)", options=horizontes,
-                                 value=horizonte_inicial, key="horizonte")
+    st.markdown("---")
+    st.markdown("### ℹ️ Partición del Dataset")
+    modo_texto = f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST*100)}% / {int((1-PORCENTAJE_TRAIN_BACKTEST)*100)}%)" if MODO_PARTICION_BACKTEST == "porcentaje" else "Fechas Fijas"
+    st.markdown(f"**Modo:** `{modo_texto}`")
+    st.markdown(f"**Entrenamiento:** `{inicio_train.strftime('%d/%m/%Y')} a {fin_train.strftime('%d/%m/%Y')}`")
+    st.markdown(f"**Holdout Ciego:** `{inicio_holdout_calc.strftime('%d/%m/%Y')} a {fin_holdout_calc.strftime('%d/%m/%Y')}`")
 
-    st.subheader("Modelos")
-    modelos_disponibles = sorted(predicciones.loc[predicciones["Estacion"] == estacion, "Modelo"].unique())
-    seleccionados = []
-    for modelo in modelos_disponibles:
-        marcado = st.checkbox(modelo, value=modelo in MODELOS_POR_DEFECTO, key="modelo_" + modelo)
-        if marcado:
-            seleccionados.append(modelo)
+    st.markdown("---")
+    st.markdown("### 🔒 Garantía Metodológica")
+    st.caption("Cero fuga de información (*No Data Leakage*). El conjunto de prueba permanece ciego y se evalúa exclusivamente a petición del operador en el simulador.")
 
-    if st.button("Recargar resultados", key="recargar"):
+    st.markdown("---")
+    if st.button("🔄 Actualizar Datos / Caché", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# ----------------------------------------------------------------- Filtrado
-de_la_estacion = predicciones[(predicciones["Estacion"] == estacion) & (predicciones["Horizonte"] == horizonte)]
-reales = de_la_estacion.drop_duplicates("Fecha").set_index("Fecha").sort_index()
-reales_observados = reales[reales["Observado"]]["Real"]
+pestana_historia, pestana_mapa, pestana_backtest = st.tabs([
+    "📊 Serie Histórica y Partición",
+    "🗺️ Mapa del Río y Estaciones",
+    "🧪 Simulador de Backtesting",
+])
 
-metricas_horizonte = metricas[(metricas["Estacion"] == estacion) & (metricas["Horizonte"] == horizonte)]
-metricas_horizonte = metricas_horizonte.sort_values("MAE").reset_index(drop=True)
-metricas_seleccionadas = metricas_horizonte[metricas_horizonte["Modelo"].isin(seleccionados)]
+with pestana_historia:
+    st.subheader("Registro Hidrológico Observado y Delimitación de Partición")
+    st.markdown(
+        "Esta vista presenta los niveles observados en la cuenca del Río Orinoco. "
+        "La partición temporal delimita los datos que los modelos conocen durante el entrenamiento y "
+        "reserva estrictamente el **30% final (Holdout)** como conjunto ciego para la evaluación interactiva."
+    )
 
-# ----------------------------------------------------------------- Indicadores
-columna1, columna2, columna3, columna4 = st.columns(4)
-ultimo_dia = reales_observados.index[-1]
-tarjeta(columna1, "Último nivel observado", "%.2f m" % reales_observados.iloc[-1], ultimo_dia.strftime("%d-%m-%Y"))
-mejor = metricas_horizonte.iloc[0]
-tarjeta(columna2, "Mejor modelo a " + str(horizonte) + " días", mejor["Modelo"], "MAE %.1f cm" % (100 * mejor["MAE"]))
-tarjeta(columna3, "Mejora vs. persistencia", "%.0f %%" % mejor["Mejora_vs_persistencia"],
-        "reducción del MAE a " + str(horizonte) + " días")
-tarjeta(columna4, "NSE del mejor", "%.3f" % mejor["NSE"], "1 = perfecto · 0 = media")
-st.write("")
+    fig_hist = construir_grafica_historica(
+        niveles=niveles_datos,
+        observados=observados_datos,
+        estacion_sel=seleccion_estacion,
+        inicio_holdout=inicio_holdout_calc,
+        fin_holdout=fin_holdout_calc,
+    )
+    st.plotly_chart(fig_hist, use_container_width=True)
 
-pestanas = st.tabs(["Pronóstico por día", "Serie a h días", "Métricas", "Error por horizonte",
-                    "Contribución de variables", "Datos y calidad"])
-pestana_dia = pestanas[0]
-pestana_pronostico = pestanas[1]
-pestana_metricas = pestanas[2]
-pestana_horizonte = pestanas[3]
-pestana_variables = pestanas[4]
-pestana_datos = pestanas[5]
-
-# ----------------------------------------------------------------- Pronóstico por día
-with pestana_dia:
-    todas_de_la_estacion = predicciones[predicciones["Estacion"] == estacion]
-    # Primera emisión con los 15 días dentro de prueba y última emisión (último dato disponible)
-    primera_emision = todas_de_la_estacion.loc[todas_de_la_estacion["Horizonte"] == 1, "FechaEmision"].min()
-    ultima_emision = todas_de_la_estacion["FechaEmision"].max()
-
-    columna_fecha, columna_dias = st.columns(2)
-    fecha_elegida = columna_fecha.date_input(
-        "Fecha de emisión (día en que se hace el pronóstico)", value=ultima_emision.date(),
-        min_value=primera_emision.date(), max_value=ultima_emision.date(), format="DD/MM/YYYY", key="fecha_emision")
-    dias_a_pronosticar = columna_dias.slider("Días a pronosticar", min_value=1, max_value=HORIZONTE_MAXIMO,
-                                             value=HORIZONTE_MAXIMO, key="dias_a_pronosticar")
-    fecha_emision = pd.Timestamp(fecha_elegida)
-    fecha_final = fecha_emision + pd.Timedelta(days=dias_a_pronosticar)
-
-    del_dia = todas_de_la_estacion[(todas_de_la_estacion["FechaEmision"] == fecha_emision) &
-                                   (todas_de_la_estacion["Horizonte"] <= dias_a_pronosticar)]
-    niveles, observados = leer_niveles_en_cache()
-    nivel_observado = niveles[estacion].where(observados[estacion])
-    historia = nivel_observado.loc[fecha_emision - pd.Timedelta(days=45):fecha_emision].dropna()
-    despues = nivel_observado.loc[fecha_emision + pd.Timedelta(days=1):fecha_final].dropna()
-    nivel_del_dia = niveles.loc[fecha_emision, estacion]
-
-    figura = go.Figure()
-    figura.add_trace(go.Scatter(x=historia.index, y=historia.to_numpy(), name="Observado hasta la emisión",
-                                mode="lines", line=dict(color="#e2e8f0", width=2.5)))
-    if not despues.empty:
-        figura.add_trace(go.Scatter(x=despues.index, y=despues.to_numpy(), name="Observado después (real)",
-                                    mode="lines+markers", line=dict(color="#e2e8f0", width=2, dash="dash")))
-    for modelo in seleccionados:
-        del_modelo = del_dia[del_dia["Modelo"] == modelo].sort_values("Horizonte")
-        # La trayectoria arranca en el nivel del día de emisión para que se vea continua
-        fechas_trayectoria = [fecha_emision] + list(del_modelo["Fecha"])
-        niveles_trayectoria = [nivel_del_dia] + list(del_modelo["Prediccion"])
-        figura.add_trace(go.Scatter(x=fechas_trayectoria, y=niveles_trayectoria, name=modelo, mode="lines+markers",
-                                    marker=dict(size=5), line=dict(color=COLORES_MODELOS.get(modelo), width=1.8)))
-    figura.add_vline(x=fecha_emision, line=dict(color="#94a3b8", dash="dot"))
-    figura.add_annotation(x=fecha_emision, y=1.0, yref="paper", text="Emisión", showarrow=False,
-                          font=dict(color="#94a3b8"), xanchor="left")
-    # El umbral solo se dibuja si el río está cerca de él (si no, aplastaría la gráfica)
-    nivel_maximo_visible = max(historia.max(), del_dia["Prediccion"].max())
-    if estacion in UMBRALES_ALERTA and nivel_maximo_visible > UMBRALES_ALERTA[estacion] - 2.0:
-        figura.add_hline(y=UMBRALES_ALERTA[estacion], line=dict(color="#ef4444", dash="dash"),
-                         annotation_text="Umbral de alerta %.1f m" % UMBRALES_ALERTA[estacion])
-    titulo = ("Pronóstico emitido el " + fecha_emision.strftime("%d-%m-%Y") + " para los próximos " +
-              str(dias_a_pronosticar) + " días — " + nombre_estacion(estacion))
-    estilo_grafica(figura, titulo, "Nivel (m)", altura=520)
-    st.plotly_chart(figura, theme=None)
-
-    if fecha_final > nivel_observado.dropna().index.max():
-        st.info("Pronóstico operativo: todavía no hay nivel observado para todos estos días.")
-
-    # Tabla: una fila por día pronosticado y una columna por modelo
-    if del_dia.empty or len(seleccionados) == 0:
-        st.info("Selecciona al menos un modelo en la barra lateral.")
+    st.markdown("#### 📈 Resumen Estadístico del Período de Entrenamiento")
+    if seleccion_estacion == "Todas las estaciones":
+        cols = st.columns(len(ESTACIONES))
+        for idx, est in enumerate(ESTACIONES):
+            s_train = niveles_datos.loc[niveles_datos.index < inicio_holdout_calc, est]
+            s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_holdout_calc, est]]
+            pct_obs = (len(s_train_obs) / len(s_train) * 100) if len(s_train) > 0 else 0
+            with cols[idx]:
+                st.markdown(f"""
+                <div class="metric-box">
+                    <p style="font-weight: 700; color: #f8fafc; font-size: 0.95rem;">{NOMBRES_ESTACIONES.get(est, est)}</p>
+                    <h3 style="color: {COLORES_ESTACIONES.get(est, '#38bdf8')};">{s_train_obs.mean():.2f} m</h3>
+                    <p>Media Train (Máx: {s_train_obs.max():.2f} m)</p>
+                    <p style="color: #64748b; font-size: 0.75rem;">Cobertura obs: {pct_obs:.1f}%</p>
+                </div>
+                """, unsafe_allow_html=True)
     else:
-        tabla_dia = del_dia[del_dia["Modelo"].isin(seleccionados)]
-        tabla_dia = tabla_dia.pivot(index="Fecha", columns="Modelo", values="Prediccion")
-        tabla_dia.insert(0, "Día", range(1, len(tabla_dia) + 1))
-        tabla_dia["Observado"] = nivel_observado.reindex(tabla_dia.index)
-        tabla_dia.index = tabla_dia.index.strftime("%d-%m-%Y")
-        tabla_dia.index.name = "Fecha"
-        formato = {}
-        for columna in tabla_dia.columns:
-            if columna != "Día":
-                formato[columna] = "{:.2f}"
-        st.dataframe(tabla_dia.style.format(formato, na_rep="—"))
-        st.caption("Niveles en metros. 'Día' = días de anticipación. 'Observado' queda vacío si ese día "
-                   "todavía no ha ocurrido o no tuvo medición.")
+        s_train = niveles_datos.loc[niveles_datos.index < inicio_holdout_calc, seleccion_estacion]
+        s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_holdout_calc, seleccion_estacion]]
+        pct_obs = (len(s_train_obs) / len(s_train) * 100) if len(s_train) > 0 else 0
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{s_train_obs.mean():.2f} m</h3>
+                <p>Nivel Medio (Train)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{s_train_obs.max():.2f} m</h3>
+                <p>Nivel Máximo (Train)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{s_train_obs.min():.2f} m</h3>
+                <p>Nivel Mínimo (Train)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c4:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{pct_obs:.1f}%</h3>
+                <p>Días Observados Reales</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-# ----------------------------------------------------------------- Pronóstico
-with pestana_pronostico:
-    figura = go.Figure()
-    figura.add_trace(go.Scatter(x=reales_observados.index, y=reales_observados.to_numpy(), name="Nivel observado",
-                                mode="lines", line=dict(color="#e2e8f0", width=2.5)))
-    for modelo in seleccionados:
-        del_modelo = de_la_estacion[de_la_estacion["Modelo"] == modelo].sort_values("Fecha")
-        figura.add_trace(go.Scatter(x=del_modelo["Fecha"], y=del_modelo["Prediccion"], name=modelo, mode="lines",
-                                    opacity=0.9, line=dict(color=COLORES_MODELOS.get(modelo), width=1.5, dash="dot")))
-    if estacion in UMBRALES_ALERTA:
-        figura.add_hline(y=UMBRALES_ALERTA[estacion], line=dict(color="#ef4444", dash="dash"),
-                         annotation_text="Umbral de alerta %.1f m" % UMBRALES_ALERTA[estacion])
-    estilo_grafica(figura, "Nivel observado vs. pronóstico a " + str(horizonte) + " días — " + nombre_estacion(estacion),
-                   "Nivel (m)", altura=540)
-    figura.update_layout(xaxis=dict(rangeslider=dict(visible=True, thickness=0.06)))
-    st.plotly_chart(figura, theme=None)
-    st.caption("Cada punto de un modelo es el pronóstico emitido " + str(horizonte) +
-               " días antes de la fecha del eje. Solo se muestran días con nivel observado.")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.info(
+        "💡 **¿Por qué no hay predicciones automáticas sobre el período Holdout en esta gráfica?**  \n"
+        "Siguiendo las mejores prácticas de ciencia de datos e hidrología operativa, el conjunto de prueba (holdout) "
+        "se mantiene como un **entorno ciego inalterado**. Los modelos no ejecutan inferencia masiva continua por defecto. "
+        "En su lugar, el operador decide en la pestaña **🧪 Simulador de Backtesting** qué modelo evaluar, qué ventana de memoria (lookback) "
+        "asignar y en qué fecha $t_0$ emitir el pronóstico a 14 días para auditar su desempeño real."
+    )
 
-# ----------------------------------------------------------------- Métricas
-with pestana_metricas:
-    st.subheader("Métricas en prueba a " + str(horizonte) + " días (de mejor a peor MAE)")
-    if metricas_seleccionadas.empty:
-        st.info("Selecciona al menos un modelo en la barra lateral.")
+with pestana_mapa:
+    st.subheader("Geolocalización de las Estaciones en la Cuenca del Río Orinoco")
+    fig_mapa = construir_mapa_cuenca()
+    st.plotly_chart(fig_mapa, use_container_width=True)
+
+    st.markdown("### 📍 Detalle de las Estaciones Hidrométricas")
+    c1, c2 = st.columns(2)
+    estaciones_lista = list(ESTACIONES_GEO.items())
+
+    for idx, (clave, info) in enumerate(estaciones_lista):
+        columna = c1 if idx % 2 == 0 else c2
+        with columna:
+            columna.markdown(f"""
+            <div class="geo-card">
+                <span class="badge">{info['tipo']}</span>
+                <h4>{info['nombre']}</h4>
+                <p><b>Coordenadas:</b> Lat: {info['lat']:.4f}° N, Lon: {info['lon']:.4f}° W</p>
+                <p>{info['descripcion']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+with pestana_backtest:
+    st.markdown("### 🧪 Simulador Interactivo de Backtesting Histórico (1 a 14 días)")
+    st.markdown(
+        "Evalúa el comportamiento de los modelos en cualquier fecha histórica $t_0$ dentro del **conjunto holdout**, "
+        "revisando la historia previa observada, el pronóstico continuo a 14 días y el nivel real registrado."
+    )
+
+    info_col1, info_col2 = st.columns(2)
+    with info_col1:
+        st.info(
+            f"📅 **Holdout disponible:** {inicio_holdout_calc.strftime('%d/%m/%Y')} a {fin_holdout_calc.strftime('%d/%m/%Y')}  \n"
+            f"📍 **Último origen válido para h=14:** `{ultimo_origen_valido.strftime('%d/%m/%Y')}`"
+        )
+    with info_col2:
+        modo_texto = f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST*100)}% Train / {int((1-PORCENTAJE_TRAIN_BACKTEST)*100)}% Holdout)" if MODO_PARTICION_BACKTEST == "porcentaje" else "Fechas Fijas del Proyecto"
+        st.info(
+            f"⚙️ **Modo de partición:** `{modo_texto}`  \n"
+            f"🔒 **Garantía sin fuga:** Entrenamiento restringido estrictamente a $t < t_\\text{{holdout}}$."
+        )
+
+    with st.container():
+        st.markdown("#### ⚙️ Parámetros de Simulación")
+        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1.5, 1.5, 1.5, 1.5])
+
+        modelos_backtest_disponibles = list(REGISTRO_MODELOS.keys())
+        with ctrl1:
+            modelo_btest = st.selectbox(
+                "Modelo a evaluar",
+                modelos_backtest_disponibles,
+                index=modelos_backtest_disponibles.index("Ridge") if "Ridge" in modelos_backtest_disponibles else 0,
+                key="sb_modelo_backtest",
+            )
+
+        with ctrl2:
+            opciones_est_btest = ["Todas las estaciones"] + ESTACIONES
+            estacion_btest = st.selectbox(
+                "Estación",
+                opciones_est_btest,
+                index=opciones_est_btest.index("Ciudad_Bolivar"),
+                format_func=lambda e: "Todas las estaciones" if e == "Todas las estaciones" else NOMBRES_ESTACIONES.get(e, e),
+                key="sb_estacion_backtest",
+            )
+
+        with ctrl3:
+            fecha_def = inicio_holdout_calc + (ultimo_origen_valido - inicio_holdout_calc) / 2
+            fecha_origen_sel = st.date_input(
+                "Fecha de origen (t₀)",
+                value=fecha_def.date(),
+                min_value=inicio_holdout_calc.date(),
+                max_value=ultimo_origen_valido.date(),
+                key="di_fecha_origen",
+            )
+
+        with ctrl4:
+            lookbacks_permitidos = REGISTRO_MODELOS[modelo_btest]["lookbacks_soportados"]
+            lookback_val = 60 if 60 in lookbacks_permitidos else lookbacks_permitidos[0]
+            lookback_sel = st.select_slider(
+                "Ventana histórica (lookback)",
+                options=LOOKBACKS_BACKTEST,
+                value=lookback_val,
+                disabled=(len(lookbacks_permitidos) == 1),
+                key="ss_lookback",
+            )
+            if len(lookbacks_permitidos) == 1:
+                st.caption(f"ℹ️ {modelo_btest} requiere lookback fijo de {lookbacks_permitidos[0]} días.")
+
+        col_ejecutar, _ = st.columns([1.5, 4.5])
+        with col_ejecutar:
+            ejecutar_sim = st.button("🚀 Ejecutar simulación", type="primary", use_container_width=True)
+
+    t0_timestamp = pd.Timestamp(fecha_origen_sel)
+    info_temp = clasificar_temporada(t0_timestamp)
+
+    st.markdown(f"""
+    <div class="season-card" style="background: rgba({int(info_temp['color'][1:3], 16)}, {int(info_temp['color'][3:5], 16)}, {int(info_temp['color'][5:7], 16)}, 0.12); border-left: 6px solid {info_temp['color']};">
+        <h4 style="margin: 0; color: {info_temp['color']};">📅 Fecha origen: {t0_timestamp.strftime('%d/%m/%Y')} | Temporada: {info_temp['nombre']}</h4>
+        <p style="margin: 0.3rem 0 0 0; color: #e2e8f0; font-size: 0.9rem;">
+            <b>Descripción:</b> {info_temp['descripcion']} | <b>Mes:</b> {info_temp['mes']} | <b>Día del año:</b> {info_temp['dia_del_anio']}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    clave_estado = f"sim_{modelo_btest}_{estacion_btest}_{t0_timestamp.strftime('%Y%m%d')}_{lookback_sel}"
+
+    if ejecutar_sim:
+        with st.spinner(f"Entrenando/cargando {modelo_btest} y simulando evento a 14 días..."):
+            try:
+                estaciones_a_simular = ESTACIONES if estacion_btest == "Todas las estaciones" else [estacion_btest]
+                res_evento = simular_evento(
+                    nombre_modelo=modelo_btest,
+                    niveles=niveles_datos,
+                    observados=observados_datos,
+                    fecha_origen=t0_timestamp,
+                    lookback=lookback_sel,
+                    estaciones=estaciones_a_simular,
+                    horizonte_maximo=HORIZONTE_BACKTEST,
+                    modo_split=MODO_PARTICION_BACKTEST,
+                    inicio_holdout=inicio_holdout_calc,
+                )
+                st.session_state[clave_estado] = res_evento
+                st.success("✅ Simulación completada exitosamente.")
+            except BacktestValidationError as e:
+                st.error(f"❌ Error de validación: {e}")
+            except Exception as e:
+                st.error(f"❌ Error durante la simulación: {e}")
+
+    if clave_estado in st.session_state:
+        simulacion = st.session_state[clave_estado]
+        df_preds = simulacion["predicciones"]
+        df_hist = simulacion["historia"]
+        df_gt = simulacion["ground_truth"]
+        df_mets = simulacion["metricas"]
+
+        st.markdown("---")
+        st.markdown(f"### 📊 Resultados del Evento: {modelo_btest} desde {t0_timestamp.strftime('%d/%m/%Y')}")
+
+        estaciones_simuladas = df_preds["Estacion"].unique()
+
+        for est_sim in estaciones_simuladas:
+            nombre_legible = NOMBRES_ESTACIONES.get(est_sim, est_sim)
+            sub_preds = df_preds[df_preds["Estacion"] == est_sim]
+            sub_hist = df_hist[df_hist["Estacion"] == est_sim]
+            sub_gt = df_gt[df_gt["Estacion"] == est_sim]
+            sub_met = df_mets[df_mets["Estacion"] == est_sim].iloc[0]
+
+            st.markdown(f"#### 📍 Estación: {nombre_legible}")
+
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            with mc1:
+                st.markdown(f"""
+                <div class="metric-box">
+                    <h3>{sub_met['MAE']:.3f} m</h3>
+                    <p>MAE Global (1..14)</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc2:
+                st.markdown(f"""
+                <div class="metric-box">
+                    <h3>{sub_met['RMSE']:.3f} m</h3>
+                    <p>RMSE Global (1..14)</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc3:
+                r2_str = f"{sub_met['R2']:.2f}" if not pd.isna(sub_met['R2']) else "N/A"
+                st.markdown(f"""
+                <div class="metric-box">
+                    <h3>{r2_str}</h3>
+                    <p>Coeficiente R²</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc4:
+                st.markdown(f"""
+                <div class="metric-box">
+                    <h3>{sub_met['MAE_1_6']:.3f} m</h3>
+                    <p>MAE Corto (h=1..6)</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with mc5:
+                st.markdown(f"""
+                <div class="metric-box">
+                    <h3>{sub_met['MAE_7_14']:.3f} m</h3>
+                    <p>MAE Prioritario (h=7..14)</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if sub_met.get("advertencia"):
+                st.warning(f"⚠️ {sub_met['advertencia']}")
+
+            fig_evento = construir_grafica_evento(
+                historia=sub_hist,
+                ground_truth=sub_gt,
+                predicciones=sub_preds,
+                fecha_origen=t0_timestamp,
+                temporada=info_temp,
+                nombre_est=est_sim,
+                nombre_modelo=modelo_btest,
+            )
+            st.plotly_chart(fig_evento, use_container_width=True)
+
+            st.markdown("##### 📋 Detalle Diario del Pronóstico vs Real")
+            tabla_mostrar = sub_preds[[
+                "Horizonte", "Fecha", "Real", "Prediccion", "Error", "ErrorAbsoluto", "Observado",
+            ]].copy()
+            tabla_mostrar["Fecha"] = pd.to_datetime(tabla_mostrar["Fecha"]).dt.strftime("%d/%m/%Y")
+
+            st.dataframe(
+                tabla_mostrar.style.format({
+                    "Real": "{:.3f}",
+                    "Prediccion": "{:.3f}",
+                    "Error": "{:+.3f}",
+                    "ErrorAbsoluto": "{:.3f}",
+                }, na_rep="— (No Observado)")
+                .apply(lambda row: ["background-color: rgba(56, 189, 248, 0.12)" if row["Horizonte"] >= 7 else "" for _ in row], axis=1),
+                use_container_width=True,
+            )
+            st.markdown("<br>", unsafe_allow_html=True)
     else:
-        tabla = pd.DataFrame()
-        tabla["Modelo"] = metricas_seleccionadas["Modelo"]
-        tabla["MAE (cm)"] = 100 * metricas_seleccionadas["MAE"]
-        tabla["RMSE (cm)"] = 100 * metricas_seleccionadas["RMSE"]
-        tabla["NSE"] = metricas_seleccionadas["NSE"]
-        tabla["Mejora vs. persistencia (%)"] = metricas_seleccionadas["Mejora_vs_persistencia"]
-        tabla.index = range(1, len(tabla) + 1)
-        formato = {"MAE (cm)": "{:.1f}", "RMSE (cm)": "{:.1f}", "NSE": "{:.3f}", "Mejora vs. persistencia (%)": "{:.1f}"}
-        tabla_con_estilo = tabla.style.format(formato)
-        tabla_con_estilo = tabla_con_estilo.highlight_min(subset=["MAE (cm)", "RMSE (cm)"], color="#14532d")
-        tabla_con_estilo = tabla_con_estilo.highlight_max(subset=["NSE"], color="#14532d")
-        st.dataframe(tabla_con_estilo)
-    st.caption("MAE: error medio absoluto. RMSE: penaliza más los errores grandes. NSE: eficiencia de "
-               "Nash-Sutcliffe. Mejora vs. persistencia: cuánto se reduce el MAE frente a 'el río seguirá igual'.")
-
-# ----------------------------------------------------------------- Error por horizonte
-with pestana_horizonte:
-    figura = go.Figure()
-    metricas_estacion = metricas[metricas["Estacion"] == estacion]
-    for modelo in seleccionados:
-        del_modelo = metricas_estacion[metricas_estacion["Modelo"] == modelo].sort_values("Horizonte")
-        figura.add_trace(go.Scatter(x=del_modelo["Horizonte"], y=100 * del_modelo["MAE"], name=modelo,
-                                    mode="lines+markers", line=dict(color=COLORES_MODELOS.get(modelo), width=2)))
-    estilo_grafica(figura, "MAE en prueba según el horizonte — " + nombre_estacion(estacion), "MAE (cm)")
-    figura.update_layout(hovermode="closest", xaxis=dict(title="Horizonte (días)", tickvals=horizontes))
-    st.plotly_chart(figura, theme=None)
-
-# ----------------------------------------------------------------- Contribución de variables
-with pestana_variables:
-    if estacion not in contribucion:
-        st.info("Ejecuta `python main.py --familias contribucion` para calcular este análisis.")
-    else:
-        figura = go.Figure()
-        for nombre_modelo, colores in [("Ridge", "#38bdf8"), ("LightGBM", "#a3e635")]:
-            resultados = contribucion[estacion][nombre_modelo]
-            configuraciones = list(resultados.keys())
-            valores = []
-            textos = []
-            for configuracion in configuraciones:
-                valores.append(100 * resultados[configuracion])
-                textos.append("%.1f" % (100 * resultados[configuracion]))
-            figura.add_trace(go.Bar(y=configuraciones, x=valores, name=nombre_modelo, orientation="h",
-                                    marker_color=colores, text=textos, textposition="outside"))
-        estilo_grafica(figura, "MAE a " + str(HORIZONTE_PRINCIPAL) + " días al quitar cada grupo de variables — " +
-                       nombre_estacion(estacion), "")
-        figura.update_layout(barmode="group", hovermode="closest", xaxis_title="MAE en prueba (cm)",
-                             yaxis=dict(autorange="reversed"))
-        st.plotly_chart(figura, theme=None)
-        st.caption("Si al quitar un grupo el error sube mucho, ese grupo aporta mucha información.")
-
-# ----------------------------------------------------------------- Datos y calidad
-with pestana_datos:
-    crudos, revision = leer_datos_y_calidad_en_cache()
-    figura = go.Figure()
-    for nombre in ESTACIONES:
-        figura.add_trace(go.Scatter(x=crudos.index, y=crudos[nombre], name=nombre_estacion(nombre), mode="lines",
-                                    line=dict(color=COLORES_ESTACIONES[nombre], width=1)))
-    confirmados = revision[revision["Confirmado"]].drop_duplicates(["Estacion", "Fecha"])
-    for _, fila in confirmados.iterrows():
-        figura.add_vline(x=fila["Fecha"], line=dict(color="#ef4444", dash="dot"))
-    estilo_grafica(figura, "Registro diario sin corregir (líneas rojas: cambios de referencia detectados)", "Nivel (m)")
-    figura.update_layout(xaxis=dict(rangeslider=dict(visible=True, thickness=0.06)))
-    st.plotly_chart(figura, theme=None)
-
-    columna_izquierda, columna_derecha = st.columns(2)
-    with columna_izquierda:
-        st.subheader("Saltos detectados")
-        revision_para_mostrar = revision.copy()
-        revision_para_mostrar["Fecha"] = revision_para_mostrar["Fecha"].dt.strftime("%Y-%m-%d")
-        st.dataframe(revision_para_mostrar, hide_index=True)
-        st.caption("Confirmado = aparece frente a las dos estaciones vecinas. Los no confirmados suelen ser "
-                   "el reflejo del salto de una vecina.")
-    with columna_derecha:
-        st.subheader("Correcciones aplicadas")
-        correcciones = pd.DataFrame(CAMBIOS_DE_REFERENCIA, columns=["Estacion", "Fecha", "Salto (m)"])
-        st.dataframe(correcciones, hide_index=True)
-        st.subheader("Días sin dato")
-        st.dataframe(crudos.isna().sum().rename("Días sin dato"))
+        st.info("👆 Selecciona los parámetros y pulsa **Ejecutar simulación** para iniciar el análisis histórico del evento.")

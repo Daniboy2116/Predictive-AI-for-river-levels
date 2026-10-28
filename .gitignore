@@ -20,10 +20,6 @@ outputs/*
 .vscode/
 .idea/
 
-# === Archivos temporales o de notas personales ===
-borrador.excalidraw
-comandos.txt
-
 # === Sistema Operativo ===
 .DS_Store
 Thumbs.db

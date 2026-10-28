@@ -37,8 +37,8 @@ src/models/__init__.py
 src/models/linea_base.py    # Persistencia, Climatología armónica, Anomalía amortiguada
 src/models/lineal_model.py  # Regresión Ridge
 src/models/tree_models.py   # RandomForest, XGBoost, LightGBM
-src/models/arima_model.py   # SARIMAX (anomalía + exógenas aguas arriba)
-src/models/google_model.py  # Prophet
+src/models/arima_model.py   # AutoARIMA / SARIMAX (anomalía + exógenas aguas arriba)
+src/models/google_model.py  # Google TimesFM (Foundation Model zero-shot de Google Research)
 src/models/neural_models.py # LSTM, CNN1D causal dilatada, Transformer (salida multi-horizonte, atajo lineal)
 src/models/ensamble.py      # Ensamble apilado (stacking)
 tests/                      # pruebas pytest (fugas de información, split, métricas)
@@ -66,8 +66,8 @@ pytest.ini
    (Z-Score, guardados con joblib) se ajustan **solo con train** para evitar *data leakage*.
    Todos los modelos se entrenan con train; validación sirve para *early stopping*, selección y para ajustar el ensamble.
 5. **Modelos:** líneas base (persistencia, climatología armónica, anomalía amortiguada); Ridge; RandomForest,
-   XGBoost y LightGBM; SARIMAX; LSTM, CNN 1D (Conv1D causal dilatada + MaxPooling1D) y Transformer (self-attention);
-   Prophet; ensamble apilado.
+   XGBoost y LightGBM; AutoARIMA y SARIMAX; LSTM, CNN 1D (Conv1D causal dilatada + MaxPooling1D) y Transformer (self-attention);
+   Google TimesFM; ensamble apilado.
 6. **Evaluación:** métricas sobre prueba en metros: MAE, RMSE, NSE (Nash-Sutcliffe) y mejora del MAE respecto a la
    persistencia. Guardar `outputs/predictions.csv` y `outputs/metrics.json`.
 7. **App:** Streamlit, selector de estación y horizonte en sidebar, checkboxes de modelos. Pestaña

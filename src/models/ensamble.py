@@ -1,21 +1,3 @@
-"""Ensamble apilado (stacking, Wolpert 1992): un metamodelo combina a los demás.
-
-Idea: cada modelo se equivoca de forma distinta. Si combinamos sus pronósticos con
-buenos pesos, los errores se compensan en parte.
-
-- Los modelos base se entrenaron SOLO con train (2009-2016).
-- El metamodelo aprende los pesos con sus predicciones de VALIDACIÓN (2017-2019),
-  datos que ningún modelo base usó para ajustar sus parámetros.
-- La evaluación final es en PRUEBA (2020-2025), igual que el resto.
-
-Metamodelo: cambio = Σ w_m · cambio_m, con pesos w_m ≥ 0 (regresión lineal con
-pesos positivos y sin intercepto), donde cambio_m es lo que el modelo m pronostica
-que subirá o bajará el río respecto a hoy.
-
-Requisito: haber ejecutado antes los modelos base (``python main.py`` lo hace en orden).
-
-Ejecutar:  python -m src.models.ensamble
-"""
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
@@ -28,7 +10,6 @@ MODELOS_EXCLUIDOS = ["Persistencia", "Climatologia", NOMBRE_ENSAMBLE]
 
 
 def tabla_ancha(predicciones: pd.DataFrame, estacion: str, horizonte: int) -> pd.DataFrame:
-    """Una fila por fecha objetivo y una columna por modelo (más ``Real`` y ``Observado``)."""
     seleccion = predicciones[(predicciones["Estacion"] == estacion) & (predicciones["Horizonte"] == horizonte)]
     ancha = seleccion.pivot(index="Fecha", columns="Modelo", values="Prediccion")
     reales = seleccion.drop_duplicates("Fecha").set_index("Fecha")
@@ -38,29 +19,20 @@ def tabla_ancha(predicciones: pd.DataFrame, estacion: str, horizonte: int) -> pd
 
 
 def ejecutar_ensamble(estacion: str) -> dict:
-    """Ajusta el metamodelo de una estación (un juego de pesos por horizonte) y lo evalúa.
-
-    Returns:
-        Métricas de prueba por horizonte (ver ``evaluar_y_guardar``).
-    """
     todas_val = cargar_predicciones("validacion")
     todas_test = cargar_predicciones("prueba")
 
     predicciones_val = []
     predicciones_test = []
     for horizonte in HORIZONTES:
-        # === PASO 1: PREPARACIÓN DE DATOS ===
-        # [JUSTIFICACIÓN]: las "variables" del metamodelo son las predicciones de los
-        # modelos base, expresadas como cambio respecto al nivel de hoy (persistencia).
+        # === Preparación de datos ===
         ancha_val = tabla_ancha(todas_val, estacion, horizonte)
         ancha_test = tabla_ancha(todas_test, estacion, horizonte)
-        modelos_base = []
-        for modelo in ancha_val.columns:
-            es_modelo = modelo not in ["Real", "Observado"] and modelo not in MODELOS_EXCLUIDOS
-            if es_modelo and modelo in ancha_test.columns:
-                modelos_base.append(modelo)
+        modelos_base = [
+            m for m in ancha_val.columns
+            if m not in ["Real", "Observado"] and m not in MODELOS_EXCLUIDOS and m in ancha_test.columns
+        ]
 
-        # Solo se combinan fechas en las que todos los modelos base tienen predicción
         ancha_test = ancha_test.dropna(subset=modelos_base + ["Persistencia"])
         nivel_hoy_val = ancha_val["Persistencia"]
         nivel_hoy_test = ancha_test["Persistencia"]
@@ -68,20 +40,18 @@ def ejecutar_ensamble(estacion: str) -> dict:
         y_val = ancha_val["Real"] - nivel_hoy_val
         x_test = ancha_test[modelos_base].sub(nivel_hoy_test, axis=0)
 
-        # === PASO 2: DEFINICIÓN DEL MODELO ===
+        # === Definición del modelo ===
         metamodelo = LinearRegression(positive=True, fit_intercept=False)
 
-        # === PASO 3: ENTRENAMIENTO ===
-        # [JUSTIFICACIÓN]: se entrena con VALIDACIÓN (no con train): en train los modelos
-        # base ya vieron los datos y parecerían mejores de lo que son.
+        # === Entrenamiento ===
         observados = ancha_val["Observado"]
         metamodelo.fit(x_val[observados], y_val[observados])
         if horizonte == HORIZONTE_PRINCIPAL:
             pesos = pd.Series(metamodelo.coef_, index=modelos_base).sort_values(ascending=False)
             pesos = pesos[pesos > 0.001].round(3)
-            print(estacion.ljust(15), "pesos del ensamble (h=" + str(horizonte) + "):", pesos.to_dict())
+            print(f"{estacion.ljust(15)} pesos del ensamble (h={horizonte}): {pesos.to_dict()}")
 
-        # === PASO 4: PREDICCIÓN (YA EN METROS) ===
+        # === Evaluación ===
         for conjunto, ancha, x, nivel_hoy in [("val", ancha_val, x_val, nivel_hoy_val),
                                               ("test", ancha_test, x_test, nivel_hoy_test)]:
             nivel_predicho = nivel_hoy.to_numpy() + metamodelo.predict(x)
@@ -103,7 +73,6 @@ def ejecutar_ensamble(estacion: str) -> dict:
 
 
 def ejecutar() -> None:
-    """Ajusta y evalúa el ensamble en todas las estaciones objetivo."""
     for estacion in ESTACIONES_OBJETIVO:
         ejecutar_ensamble(estacion)
 

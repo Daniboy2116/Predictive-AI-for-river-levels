@@ -1,14 +1,3 @@
-"""Regresión Ridge: modelo lineal con penalización L2 sobre las 79 variables.
-
-Predice el cambio y(t + h) - y(t) como una suma ponderada de las variables. La
-penalización (alpha) encoge los pesos para que el modelo no se sobreajuste
-cuando hay variables muy correlacionadas (rezagos vecinos, estaciones vecinas).
-
-Es el modelo "sencillo pero fuerte": si un modelo complejo no le gana, la
-complejidad no se justifica.
-
-Ejecutar:  python -m src.models.lineal_model
-"""
 import pandas as pd
 from sklearn.linear_model import Ridge
 
@@ -16,41 +5,37 @@ from src.configuracion import ESTACIONES_OBJETIVO, HORIZONTES
 from src.evaluate import armar_predicciones, calcular_metricas, evaluar_y_guardar
 from src.preprocessing import cambio_a_nivel, cargar_datos, preparar_datos
 
-# Valores de alpha que se prueban; se elige el de menor MAE en validación
-VALORES_ALPHA = [0.1, 1.0, 10.0, 100.0, 1000.0]
+VALORES_ALPHA = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+
+
+def seleccionar_mejor_alpha(x_train: pd.DataFrame, y_train: pd.Series, x_val: pd.DataFrame, y_val: pd.Series) -> float:
+    mejor_alpha = VALORES_ALPHA[0]
+    mejor_mae = float("inf")
+    for alpha in VALORES_ALPHA:
+        candidato = Ridge(alpha=alpha)
+        candidato.fit(x_train, y_train)
+        mae_val = calcular_metricas(y_val, candidato.predict(x_val))["MAE"]
+        if mae_val < mejor_mae:
+            mejor_mae = mae_val
+            mejor_alpha = alpha
+    return mejor_alpha
 
 
 def ejecutar_ridge(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str) -> dict:
-    """Entrena y evalúa Ridge para una estación en todos los horizontes.
-
-    Returns:
-        Métricas de prueba por horizonte (ver ``evaluar_y_guardar``).
-    """
     predicciones_val = []
     predicciones_test = []
     for horizonte in HORIZONTES:
-        # === PASO 1: PREPARACIÓN DE DATOS ===
+        # === Preparación de datos ===
         datos = preparar_datos(niveles, observados, estacion, horizonte)
 
-        # === PASO 2: DEFINICIÓN DEL MODELO ===
-        # [JUSTIFICACIÓN]: probamos varios alpha y nos quedamos con el que mejor
-        # funciona en validación (búsqueda de hiperparámetros sin tocar prueba).
-        mejor_alpha = VALORES_ALPHA[0]
-        mejor_mae = float("inf")
-        for alpha in VALORES_ALPHA:
-            candidato = Ridge(alpha=alpha)
-            candidato.fit(datos["x_train"], datos["y_train"])
-            mae_val = calcular_metricas(datos["y_val"], candidato.predict(datos["x_val"]))["MAE"]
-            if mae_val < mejor_mae:
-                mejor_mae = mae_val
-                mejor_alpha = alpha
+        # === Definición del modelo ===
+        mejor_alpha = seleccionar_mejor_alpha(datos["x_train"], datos["y_train"], datos["x_val"], datos["y_val"])
         modelo = Ridge(alpha=mejor_alpha)
 
-        # === PASO 3: ENTRENAMIENTO ===
+        # === Entrenamiento ===
         modelo.fit(datos["x_train"], datos["y_train"])
 
-        # === PASO 4: PREDICCIÓN E INVERSIÓN DE ESCALA ===
-        # El modelo predice el cambio en metros; el nivel es y(t) + cambio.
+        # === Evaluación ===
         for conjunto in ["val", "test", "futuro"]:
             cambio_predicho = modelo.predict(datos["x_" + conjunto])
             tabla = datos["tabla_" + conjunto]
@@ -65,7 +50,6 @@ def ejecutar_ridge(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: st
 
 
 def ejecutar() -> None:
-    """Entrena y evalúa Ridge en todas las estaciones objetivo."""
     niveles, observados = cargar_datos()
     for estacion in ESTACIONES_OBJETIVO:
         ejecutar_ridge(niveles, observados, estacion)

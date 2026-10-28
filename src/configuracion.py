@@ -1,42 +1,29 @@
-"""Configuración central del proyecto: rutas, estaciones, horizontes y fechas de corte.
-
-Todos los módulos leen sus parámetros de aquí, así un cambio (por ejemplo, otro
-horizonte de pronóstico o nuevas fechas de corte) se hace en un único lugar.
-"""
+"""Configuración central del proyecto: rutas, estaciones, horizontes y fechas de corte."""
 from pathlib import Path
+import pandas as pd
 
-# --------------------------------------------------------------------------
-# Rutas
-# --------------------------------------------------------------------------
 CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
-# Serie auditada (ver data/auditoria/INFORME_AUDITORIA.md): valores tomados de las hojas por
-# estación de "DATOS RIO ORINOCO.xlsx", sin imputados y sin días aberrantes. No se usa la hoja
-# "Entrenar": tiene Ciudad Bolívar corrida un día entre 2020-01-01 y 2021-12-30.
+# Serie auditada (data/auditoria/INFORME_AUDITORIA.md): hojas por estación de "DATOS RIO ORINOCO.xlsx",
+# sin imputados ni días aberrantes. No se usa la hoja "Entrenar" (Ciudad Bolívar corrida un día en 2020-2021).
 # Empieza en 2009 porque Ayacucho no tiene datos reales entre 2007-01-01 y 2008-11-30.
 RUTA_DATOS = CARPETA_PROYECTO / "data" / "niveles_reales.xlsx"
-HOJA_DATOS = "Niveles"              # una fila por día, 2009-01-01 a 2025-02-24
-# Encabezado de cada columna del Excel -> estación del proyecto
+HOJA_DATOS = "Niveles"
 COLUMNAS_EXCEL = {
     "Ayacucho": "Ayacucho",
     "Caicara": "Caicara",
     "Ciudad_Bolivar": "Ciudad_Bolivar",
     "Palua": "Palua",
 }
-# Dataset simulado (create_dummy_data.py), usado por las pruebas del control de calidad
 RUTA_DATOS_SIMULADOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
 HOJA_DATOS_SIMULADOS = "Niveles"
 CARPETA_SALIDA = CARPETA_PROYECTO / "outputs"
 CARPETA_ESCALADORES = CARPETA_SALIDA / "escaladores"
+CARPETA_MODELOS = CARPETA_SALIDA / "modelos"
+ARCHIVO_METADATOS_MODELOS = CARPETA_MODELOS / "metadata.json"
 
-# --------------------------------------------------------------------------
-# Estaciones (ordenadas de aguas arriba a aguas abajo)
-# --------------------------------------------------------------------------
 ESTACIONES = ["Ayacucho", "Caicara", "Ciudad_Bolivar", "Palua"]
-
-# Estaciones que queremos pronosticar (las demás solo aportan información)
 ESTACIONES_OBJETIVO = ["Ciudad_Bolivar", "Palua"]
 
-# Nombres para mostrar en gráficas y en el dashboard
 NOMBRES_ESTACIONES = {
     "Ayacucho": "Puerto Ayacucho",
     "Caicara": "Caicara del Orinoco",
@@ -44,24 +31,12 @@ NOMBRES_ESTACIONES = {
     "Palua": "Palúa",
 }
 
-# Umbral de alerta por crecida (m), cuando se conoce
 UMBRALES_ALERTA = {"Ciudad_Bolivar": 16.5}
 
-# --------------------------------------------------------------------------
-# Control de calidad
-# --------------------------------------------------------------------------
-# Cambios de referencia (cero de la regla) CONFIRMADOS: (estación, fecha, salto en m).
-# El salto es lo que cambió la lectura a partir de esa fecha. Al corregir se lleva
-# toda la serie a la referencia más reciente (la que usan hoy los umbrales de alerta).
-# La auditoría descartó los dos que se suponían (Ciudad Bolívar 1987-05-15: -2,20 m y
-# 2019-01-01: +1,00 m): frente a Caicara (t-4) la diferencia anual no cambia, y ambos saltos
-# se disipan en 7-10 días. El pulso de 2019 se dejó como NaN en niveles_reales.xlsx.
+# Los supuestos cambios de Ciudad Bolívar (1987-05-15 y 2019-01-01) son pulsos de 7-10 días, no escalones:
+# frente a Caicara (t-4) la diferencia anual no cambia. Ver data/auditoria/INFORME_AUDITORIA.md, anexo D.
 CAMBIOS_DE_REFERENCIA = []
 
-# Para detectar saltos se compara cada estación con DOS vecinas muy correlacionadas:
-# estación -> [(vecina, días que tarda la onda de la estación a la vecina), ...]
-# Un salto solo se confirma si aparece frente a ambas (si solo aparece frente a una,
-# probablemente el problema está en esa vecina).
 VECINAS_CONTROL = {
     "Ayacucho": [("Caicara", 14), ("Ciudad_Bolivar", 18)],
     "Caicara": [("Ciudad_Bolivar", 4), ("Palua", 4)],
@@ -69,24 +44,97 @@ VECINAS_CONTROL = {
     "Palua": [("Ciudad_Bolivar", 0), ("Caicara", -4)],
 }
 
-# --------------------------------------------------------------------------
-# Diseño experimental
-# --------------------------------------------------------------------------
-SEMILLA = 42                        # semilla fija para resultados reproducibles
-HORIZONTE_PRINCIPAL = 15            # días de anticipación del pronóstico
-HORIZONTE_MAXIMO = 15               # se pronostica cada día desde t+1 hasta t+15
-HORIZONTES = list(range(1, HORIZONTE_MAXIMO + 1))   # 1, 2, ..., 15: todos se evalúan y se guardan
-HORIZONTES_RESUMEN = [1, 3, 5, 7, 10, 15]           # los que se imprimen en consola
+SEMILLA = 42
+HORIZONTE_PRINCIPAL = 15
+HORIZONTE_MAXIMO = 15
+HORIZONTES = list(range(1, HORIZONTE_MAXIMO + 1))
+HORIZONTES_RESUMEN = [1, 3, 5, 7, 10, 15]
 
-# Partición cronológica según la FECHA OBJETIVO (t + h)
-FECHA_FIN_TRAIN = "2016-12-31"      # train: 2009-2016 (los datos reales empiezan en 2009)
-FECHA_FIN_VAL = "2019-12-31"        # validación: 2017-2019; prueba: 2020-feb 2025
+FECHA_FIN_TRAIN = "2016-12-31"
+FECHA_FIN_VAL = "2019-12-31"
+
+ARMONICOS_CALENDARIO = 3
+ARMONICOS_CLIMATOLOGIA = 2
+REZAGOS = [0, 1, 2, 3, 5, 7, 10, 15, 20, 30]
+VENTANAS_TENDENCIA = [1, 3, 7, 15, 30]
+VENTANAS_MEDIA_MOVIL = [7, 30]
 
 # --------------------------------------------------------------------------
-# Variables de entrada
+# Configuración del Backtesting Interactivo
 # --------------------------------------------------------------------------
-ARMONICOS_CALENDARIO = 3                     # seno/coseno con k = 1, 2, 3
-ARMONICOS_CLIMATOLOGIA = 2                   # K = 2 armónicos para la climatología (Tabla 1 del PDF)
-REZAGOS = [0, 1, 2, 3, 5, 7, 10, 15, 20, 30]  # y(t - L)
-VENTANAS_TENDENCIA = [1, 3, 7, 15, 30]       # y(t) - y(t - w)
-VENTANAS_MEDIA_MOVIL = [7, 30]               # medias móviles terminadas en t
+PORCENTAJE_TRAIN_BACKTEST = 0.70
+HORIZONTE_BACKTEST = 14
+LOOKBACKS_BACKTEST = [30, 60, 90]
+MODO_PARTICION_BACKTEST = "porcentaje"  # Opciones: "porcentaje", "fechas_actuales"
+
+TEMPORADAS_HIDROLOGICAS = [
+    {
+        "nombre": "Estiaje / Aguas Bajas",
+        "codigo": "estiaje",
+        "meses": [1, 2, 3, 4],
+        "color": "#38bdf8",
+        "descripcion": "Periodo climatológico de niveles mínimos del río Orinoco.",
+    },
+    {
+        "nombre": "Transición / Ascenso",
+        "codigo": "transicion",
+        "meses": [5, 6, 10, 11],
+        "color": "#facc15",
+        "descripcion": "Periodo de transición estacional con caudales intermedios.",
+    },
+    {
+        "nombre": "Crecida / Aguas Altas",
+        "codigo": "crecida",
+        "meses": [7, 8, 9],
+        "color": "#ef4444",
+        "descripcion": "Periodo de crecida anual con máximos caudales e inundación.",
+    },
+    {
+        "nombre": "Transición / Descenso",
+        "codigo": "descenso",
+        "meses": [12],
+        "color": "#a78bfa",
+        "descripcion": "Periodo de inicio de descenso hacia los niveles de estiaje.",
+    },
+]
+
+
+def calcular_corte_holdout(
+    fechas: pd.DatetimeIndex,
+    porcentaje_train: float = PORCENTAJE_TRAIN_BACKTEST,
+) -> pd.Timestamp:
+    """Calcula el corte cronológico del train/holdout (por defecto 70/30) sin mezclar aleatoriamente.
+
+    El 70% inicial temporal corresponde a entrenamiento y el 30% final al holdout.
+    """
+    fechas_ordenadas = pd.DatetimeIndex(fechas).sort_values().drop_duplicates()
+    if len(fechas_ordenadas) == 0:
+        raise ValueError("El índice de fechas está vacío.")
+    indice_corte = int(len(fechas_ordenadas) * porcentaje_train)
+    indice_corte = min(max(1, indice_corte), len(fechas_ordenadas) - 1)
+    return fechas_ordenadas[indice_corte]
+
+
+def obtener_rango_holdout(
+    niveles: pd.DataFrame,
+    observados: pd.DataFrame,
+    modo: str = MODO_PARTICION_BACKTEST,
+    porcentaje_train: float = PORCENTAJE_TRAIN_BACKTEST,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Devuelve el inicio y fin válidos del conjunto holdout para backtesting.
+
+    El cálculo se realiza preferentemente sobre las fechas comunes observadas en las cuatro estaciones.
+    """
+    if modo == "fechas_actuales":
+        inicio = pd.Timestamp(FECHA_FIN_VAL) + pd.Timedelta(days=1)
+        fin = niveles.index.max()
+        return inicio, fin
+
+    fechas_comunes = observados.all(axis=1)
+    fechas_validas = niveles.index[fechas_comunes]
+    if len(fechas_validas) == 0:
+        fechas_validas = niveles.index
+
+    inicio = calcular_corte_holdout(fechas_validas, porcentaje_train)
+    fin = niveles.index.max()
+    return inicio, fin
