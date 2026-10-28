@@ -144,19 +144,24 @@ section[data-testid="stSidebar"] {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(56, 189, 248, 0.15);
     border-radius: 12px;
-    padding: 0.8rem 1rem;
+    padding: 0.75rem 0.6rem;
     text-align: center;
+    min-width: 0;
+    overflow: visible;
 }
 .metric-box h3 {
     margin: 0;
-    font-size: 1.5rem;
+    font-size: 1.35rem;
     font-weight: 700;
     color: #38bdf8;
+    white-space: nowrap;
 }
 .metric-box p {
-    margin: 0.2rem 0 0 0;
+    margin: 0.25rem 0 0 0;
     color: #94a3b8;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
+    line-height: 1.25;
+    word-wrap: break-word;
 }
 </style>
 """
@@ -167,13 +172,25 @@ def estilo_grafica(fig: go.Figure, titulo: str, eje_y: str = "Nivel (m)", altura
         template="plotly_dark",
         height=altura,
         hovermode="x unified",
-        title=dict(text=titulo, x=0.01, y=0.98, yanchor="top", font=dict(size=16, color="#f8fafc")),
+        hoverlabel=dict(
+            namelength=-1,
+            bgcolor="rgba(10, 21, 38, 0.95)",
+            bordercolor="rgba(56, 189, 248, 0.4)",
+            font=dict(size=12, color="#f8fafc"),
+        ),
+        title=dict(text=titulo, x=0.01, y=0.97, yanchor="top", font=dict(size=16, color="#f8fafc")),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(255,255,255,0.015)",
         yaxis=dict(title=eje_y, gridcolor="rgba(255,255,255,0.08)"),
         xaxis=dict(gridcolor="rgba(255,255,255,0.08)"),
-        legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom"),
-        margin=dict(l=10, r=10, t=75, b=10),
+        legend=dict(
+            orientation="h",
+            x=0.01,
+            y=1.08,
+            yanchor="bottom",
+            font=dict(size=12, color="#cbd5e1"),
+        ),
+        margin=dict(l=20, r=20, t=85, b=20),
     )
 
 
@@ -203,6 +220,8 @@ def construir_grafica_historica(
                 name=nombre,
                 mode="lines",
                 line=dict(color=col, width=1.8),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
             ))
         titulo = "Serie Histórica del Nivel del Río Orinoco — Red de Monitoreo Completa"
     else:
@@ -219,6 +238,8 @@ def construir_grafica_historica(
                 name=f"Entrenamiento: {nombre} (70%)",
                 mode="lines",
                 line=dict(color=col, width=2.0),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
             ))
 
         # Segmento Holdout (estrictamente no visto durante el entrenamiento)
@@ -231,6 +252,8 @@ def construir_grafica_historica(
                 name=f"Holdout Ciego: {nombre} (30% reservado)",
                 mode="lines",
                 line=dict(color="#94a3b8", width=1.8, dash="dot"),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
             ))
 
         if estacion_sel in UMBRALES_ALERTA:
@@ -293,6 +316,8 @@ def construir_grafica_evento(
             mode="lines+markers",
             line=dict(color="#94a3b8", width=2),
             marker=dict(size=4),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
         ))
 
     # 2. Ground Truth futuro observado
@@ -305,6 +330,8 @@ def construir_grafica_evento(
             mode="lines+markers",
             line=dict(color="#10b981", width=2.5),
             marker=dict(size=6, symbol="circle"),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
         ))
 
     # 3. Predicciones del modelo
@@ -321,6 +348,8 @@ def construir_grafica_evento(
             mode="lines+markers",
             line=dict(color=color_mod, width=2, dash="solid"),
             marker=dict(size=6),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
         ))
 
     if not p7_14.empty:
@@ -332,6 +361,8 @@ def construir_grafica_evento(
             mode="lines+markers",
             line=dict(color=color_mod, width=3.5, dash="solid"),
             marker=dict(size=8, symbol="diamond"),
+            hovertemplate="%{y:.2f} m<extra></extra>",
+            hoverlabel=dict(namelength=-1),
         ))
 
     # 4. Línea de origen t0
