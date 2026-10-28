@@ -9,14 +9,18 @@ from pathlib import Path
 # Rutas
 # --------------------------------------------------------------------------
 CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
-RUTA_DATOS = CARPETA_PROYECTO / "data" / "DATOS RIO ORINOCO.xlsx"
-HOJA_DATOS = "Entrenar"             # hoja con una fila por día (2009-01-01 en adelante)
+# Serie auditada (ver data/auditoria/INFORME_AUDITORIA.md): valores tomados de las hojas por
+# estación de "DATOS RIO ORINOCO.xlsx", sin imputados y sin días aberrantes. No se usa la hoja
+# "Entrenar": tiene Ciudad Bolívar corrida un día entre 2020-01-01 y 2021-12-30.
+# Empieza en 2009 porque Ayacucho no tiene datos reales entre 2007-01-01 y 2008-11-30.
+RUTA_DATOS = CARPETA_PROYECTO / "data" / "niveles_reales.xlsx"
+HOJA_DATOS = "Niveles"              # una fila por día, 2009-01-01 a 2025-02-24
 # Encabezado de cada columna del Excel -> estación del proyecto
 COLUMNAS_EXCEL = {
-    "Puerto Ayacucho": "Ayacucho",
-    "Caicara el mini mini": "Caicara",
-    "Ciudad Bolívar": "Ciudad_Bolivar",
-    "Palúa": "Palua",
+    "Ayacucho": "Ayacucho",
+    "Caicara": "Caicara",
+    "Ciudad_Bolivar": "Ciudad_Bolivar",
+    "Palua": "Palua",
 }
 # Dataset simulado (create_dummy_data.py), usado por las pruebas del control de calidad
 RUTA_DATOS_SIMULADOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
@@ -49,10 +53,10 @@ UMBRALES_ALERTA = {"Ciudad_Bolivar": 16.5}
 # Cambios de referencia (cero de la regla) CONFIRMADOS: (estación, fecha, salto en m).
 # El salto es lo que cambió la lectura a partir de esa fecha. Al corregir se lleva
 # toda la serie a la referencia más reciente (la que usan hoy los umbrales de alerta).
-CAMBIOS_DE_REFERENCIA = [
-    ("Ciudad_Bolivar", "1987-05-15", -2.20),
-    ("Ciudad_Bolivar", "2019-01-01", 1.00),
-]
+# La auditoría descartó los dos que se suponían (Ciudad Bolívar 1987-05-15: -2,20 m y
+# 2019-01-01: +1,00 m): frente a Caicara (t-4) la diferencia anual no cambia, y ambos saltos
+# se disipan en 7-10 días. El pulso de 2019 se dejó como NaN en niveles_reales.xlsx.
+CAMBIOS_DE_REFERENCIA = []
 
 # Para detectar saltos se compara cada estación con DOS vecinas muy correlacionadas:
 # estación -> [(vecina, días que tarda la onda de la estación a la vecina), ...]
