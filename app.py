@@ -10,8 +10,6 @@ from src.configuracion import (
     ESTACIONES,
     ESTACIONES_OBJETIVO,
     HORIZONTE_BACKTEST,
-    HORIZONTE_MAXIMO,
-    HORIZONTE_PRINCIPAL,
     LOOKBACKS_BACKTEST,
     MODO_PARTICION_BACKTEST,
     NOMBRES_ESTACIONES,
@@ -19,7 +17,6 @@ from src.configuracion import (
     UMBRALES_ALERTA,
     obtener_rango_holdout,
 )
-from src.evaluate import RUTA_PREDICCIONES, cargar_predicciones
 from src.inference import REGISTRO_MODELOS
 
 COLORES_MODELOS = {
@@ -38,6 +35,13 @@ COLORES_MODELOS = {
     "CNN1D": "#f472b6",
     "Transformer": "#60a5fa",
     "Ensamble": "#facc15",
+}
+
+COLORES_ESTACIONES = {
+    "Ayacucho": "#a78bfa",
+    "Caicara": "#38bdf8",
+    "Ciudad_Bolivar": "#f59e0b",
+    "Palua": "#22c55e",
 }
 
 ESTACIONES_GEO = {
@@ -70,8 +74,6 @@ ESTACIONES_GEO = {
         "descripcion": "Confluencia del Río Caroní con el Orinoco en Ciudad Guayana.",
     },
 }
-
-MODELOS_DEFAULT = ["Persistencia", "Ridge", "LightGBM", "AutoARIMA", "Prophet", "Ensamble"]
 
 ESTILO_CSS = """
 <style>
@@ -176,58 +178,96 @@ def estilo_grafica(fig: go.Figure, titulo: str, eje_y: str = "Nivel (m)", altura
 
 
 @st.cache_data
-def cargar_datos_predicciones():
-    if not RUTA_PREDICCIONES.exists():
-        return pd.DataFrame()
-    return cargar_predicciones("prueba")
-
-
-@st.cache_data
 def obtener_datos_hidrologicos():
     return cargar_datos_backtest()
 
 
-def construir_grafica_estacion(datos_estacion: pd.DataFrame, nombre_est: str, modelos_sel: list, horizonte_sel: int) -> go.Figure:
+def construir_grafica_historica(
+    niveles: pd.DataFrame,
+    observados: pd.DataFrame,
+    estacion_sel: str,
+    inicio_holdout: pd.Timestamp,
+    fin_holdout: pd.Timestamp,
+) -> go.Figure:
+    """Construye la gráfica de series históricas delimitando con precisión el corte train/holdout."""
     fig = go.Figure()
 
-    reales = datos_estacion.drop_duplicates("Fecha").set_index("Fecha").sort_index()
-    reales_obs = reales[reales["Observado"]]["Real"]
-
-    if not reales_obs.empty:
-        fig.add_trace(go.Scatter(
-            x=reales_obs.index,
-            y=reales_obs.to_numpy(),
-            name="Nivel Real Observado",
-            mode="lines",
-            line=dict(color="#f8fafc", width=2.5),
-        ))
-
-    for mod in modelos_sel:
-        sub = datos_estacion[datos_estacion["Modelo"] == mod].sort_values("Fecha")
-        if not sub.empty:
-            color = COLORES_MODELOS.get(mod, "#38bdf8")
+    if estacion_sel == "Todas las estaciones":
+        for est in ESTACIONES:
+            col = COLORES_ESTACIONES.get(est, "#38bdf8")
+            nombre = NOMBRES_ESTACIONES.get(est, est)
+            s_obs = niveles[est].where(observados[est])
             fig.add_trace(go.Scatter(
-                x=sub["Fecha"],
-                y=sub["Prediccion"],
-                name=mod,
+                x=s_obs.index,
+                y=s_obs.to_numpy(),
+                name=nombre,
                 mode="lines",
-                opacity=0.9,
-                line=dict(color=color, width=1.6, dash="solid"),
+                line=dict(color=col, width=1.8),
+            ))
+        titulo = "Serie Histórica del Nivel del Río Orinoco — Red de Monitoreo Completa"
+    else:
+        col = COLORES_ESTACIONES.get(estacion_sel, "#38bdf8")
+        nombre = NOMBRES_ESTACIONES.get(estacion_sel, estacion_sel)
+
+        # Segmento de entrenamiento (visto por los modelos)
+        mascara_train = (niveles.index < inicio_holdout) & observados[estacion_sel]
+        s_train = niveles.loc[mascara_train, estacion_sel]
+        if not s_train.empty:
+            fig.add_trace(go.Scatter(
+                x=s_train.index,
+                y=s_train.to_numpy(),
+                name=f"Entrenamiento: {nombre} (70%)",
+                mode="lines",
+                line=dict(color=col, width=2.0),
             ))
 
-    if nombre_est in UMBRALES_ALERTA:
-        umbral = UMBRALES_ALERTA[nombre_est]
-        fig.add_hline(
-            y=umbral,
-            line=dict(color="#ef4444", dash="dash", width=1.8),
-            annotation_text=f"Cota de alerta: {umbral:.1f} m",
-            annotation_position="top left",
-            annotation_font=dict(color="#ef4444"),
-        )
+        # Segmento Holdout (estrictamente no visto durante el entrenamiento)
+        mascara_holdout = (niveles.index >= inicio_holdout) & observados[estacion_sel]
+        s_holdout = niveles.loc[mascara_holdout, estacion_sel]
+        if not s_holdout.empty:
+            fig.add_trace(go.Scatter(
+                x=s_holdout.index,
+                y=s_holdout.to_numpy(),
+                name=f"Holdout Ciego: {nombre} (30% reservado)",
+                mode="lines",
+                line=dict(color="#94a3b8", width=1.8, dash="dot"),
+            ))
 
-    titulo = f"Nivel Real vs Pronósticos a {horizonte_sel} días — {NOMBRES_ESTACIONES.get(nombre_est, nombre_est)}"
-    estilo_grafica(fig, titulo, "Nivel (m)")
-    fig.update_layout(xaxis=dict(rangeslider=dict(visible=True, thickness=0.05)))
+        if estacion_sel in UMBRALES_ALERTA:
+            umbral = UMBRALES_ALERTA[estacion_sel]
+            fig.add_hline(
+                y=umbral,
+                line=dict(color="#ef4444", dash="dash", width=1.8),
+                annotation_text=f"Cota de alerta: {umbral:.1f} m",
+                annotation_position="top left",
+                annotation_font=dict(color="#ef4444"),
+            )
+        titulo = f"Serie Histórica Observada y Partición — {nombre}"
+
+    # Línea vertical divisoria del Holdout
+    fig.add_vline(
+        x=inicio_holdout,
+        line=dict(color="#f59e0b", width=2, dash="dash"),
+        annotation_text="Línea de Partición (Inicio Holdout Ciego)",
+        annotation_position="top left",
+        annotation_font=dict(color="#f59e0b", size=11),
+    )
+
+    # Región sombreada del Holdout
+    fig.add_vrect(
+        x0=inicio_holdout,
+        x1=fin_holdout,
+        fillcolor="rgba(245, 158, 11, 0.08)",
+        line_width=1,
+        line_dash="dot",
+        line_color="rgba(245, 158, 11, 0.4)",
+        annotation_text="Conjunto Holdout (30% reservado para Backtesting)",
+        annotation_position="top right",
+        annotation_font=dict(size=11, color="#f59e0b"),
+    )
+
+    estilo_grafica(fig, titulo, "Nivel (m)", altura=520)
+    fig.update_layout(xaxis=dict(rangeslider=dict(visible=True, thickness=0.06)))
     return fig
 
 
@@ -284,7 +324,6 @@ def construir_grafica_evento(
         ))
 
     if not p7_14.empty:
-        # Enlace suave desde h=6
         x_destacada = pd.concat([p1_6.tail(1), p7_14]) if not p1_6.empty else p7_14
         fig.add_trace(go.Scatter(
             x=x_destacada["Fecha"],
@@ -396,97 +435,127 @@ st.markdown(ESTILO_CSS, unsafe_allow_html=True)
 st.markdown("""
 <div class="header-container">
     <h1>🌊 Sistema de Predicción de Niveles del Río Orinoco</h1>
-    <p>Comparativa global y simulación de backtesting histórico interactivo (1 a 14 días)</p>
+    <p>Visualización histórica y laboratorio interactivo de backtesting (1 a 14 días)</p>
 </div>
 """, unsafe_allow_html=True)
 
-predicciones = cargar_datos_predicciones()
 niveles_datos, observados_datos = obtener_datos_hidrologicos()
 
-# Rango del holdout calculado cronológicamente
+# Rango del holdout calculado cronológicamente (70% train / 30% holdout ciego)
 inicio_holdout_calc, fin_holdout_calc = obtener_rango_holdout(
     niveles_datos, observados_datos, modo=MODO_PARTICION_BACKTEST, porcentaje_train=PORCENTAJE_TRAIN_BACKTEST,
 )
 ultimo_origen_valido = fin_holdout_calc - pd.Timedelta(days=HORIZONTE_BACKTEST)
+inicio_train = niveles_datos.index.min()
+fin_train = inicio_holdout_calc - pd.Timedelta(days=1)
 
-estaciones_disponibles = sorted(predicciones["Estacion"].unique()) if not predicciones.empty else ESTACIONES_OBJETIVO
-opciones_estacion = ["Todas las estaciones"] + estaciones_disponibles
+opciones_estacion = ["Todas las estaciones"] + ESTACIONES
 
 with st.sidebar:
-    st.markdown("### 📍 Selección Global")
+    st.markdown("### 📍 Visualización Histórica")
     seleccion_estacion = st.selectbox(
-        "Estación hidrológica (Global)",
+        "Estación hidrológica",
         opciones_estacion,
         format_func=lambda e: "Todas las estaciones" if e == "Todas las estaciones" else NOMBRES_ESTACIONES.get(e, e),
     )
 
     st.markdown("---")
-    st.markdown("### ⏱️ Horizonte Global")
-    horizontes_disponibles = sorted(predicciones["Horizonte"].unique()) if not predicciones.empty else [HORIZONTE_PRINCIPAL]
-    horizonte_default = HORIZONTE_PRINCIPAL if HORIZONTE_PRINCIPAL in horizontes_disponibles else horizontes_disponibles[-1]
-    horizonte_seleccionado = st.select_slider(
-        "Días de anticipación (h)",
-        options=horizontes_disponibles,
-        value=horizonte_default,
-    )
+    st.markdown("### ℹ️ Partición del Dataset")
+    modo_texto = f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST*100)}% / {int((1-PORCENTAJE_TRAIN_BACKTEST)*100)}%)" if MODO_PARTICION_BACKTEST == "porcentaje" else "Fechas Fijas"
+    st.markdown(f"**Modo:** `{modo_texto}`")
+    st.markdown(f"**Entrenamiento:** `{inicio_train.strftime('%d/%m/%Y')} a {fin_train.strftime('%d/%m/%Y')}`")
+    st.markdown(f"**Holdout Ciego:** `{inicio_holdout_calc.strftime('%d/%m/%Y')} a {fin_holdout_calc.strftime('%d/%m/%Y')}`")
 
     st.markdown("---")
-    st.markdown("### 🤖 Modelos Globales")
-    if not predicciones.empty:
-        if seleccion_estacion == "Todas las estaciones":
-            modelos_disponibles = sorted(predicciones["Modelo"].unique())
-        else:
-            modelos_disponibles = sorted(predicciones.loc[predicciones["Estacion"] == seleccion_estacion, "Modelo"].unique())
-    else:
-        modelos_disponibles = MODELOS_DEFAULT
-
-    col_btn1, col_btn2 = st.columns(2)
-    marcar_todos = col_btn1.button("Todos", use_container_width=True)
-    marcar_def = col_btn2.button("Por defecto", use_container_width=True)
-
-    if marcar_todos:
-        modelos_seleccionados = modelos_disponibles
-    elif marcar_def:
-        modelos_seleccionados = [m for m in modelos_disponibles if m in MODELOS_DEFAULT]
-    else:
-        modelos_seleccionados = []
-        for m in modelos_disponibles:
-            activo = st.checkbox(m, value=(m in MODELOS_DEFAULT), key=f"check_{m}")
-            if activo:
-                modelos_seleccionados.append(m)
+    st.markdown("### 🔒 Garantía Metodológica")
+    st.caption("Cero fuga de información (*No Data Leakage*). El conjunto de prueba permanece ciego y se evalúa exclusivamente a petición del operador en el simulador.")
 
     st.markdown("---")
-    if st.button("🔄 Actualizar Interfaz", use_container_width=True):
+    if st.button("🔄 Actualizar Datos / Caché", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-pestana_grafica, pestana_mapa, pestana_backtest = st.tabs([
-    "📈 Nivel Real vs Predicción de Modelos",
+pestana_historia, pestana_mapa, pestana_backtest = st.tabs([
+    "📊 Serie Histórica y Partición",
     "🗺️ Mapa del Río y Estaciones",
     "🧪 Simulador de Backtesting",
 ])
 
-with pestana_grafica:
-    if predicciones.empty:
-        st.warning("⚠️ No se encontraron predicciones guardadas en `outputs/predictions.csv`.")
-        st.info("Ejecuta `python main.py` en la terminal para generar los pronósticos batch completos.")
-    elif not modelos_seleccionados:
-        st.info("💡 Por favor, selecciona al menos un modelo en la barra lateral.")
+with pestana_historia:
+    st.subheader("Registro Hidrológico Observado y Delimitación de Partición")
+    st.markdown(
+        "Esta vista presenta los niveles observados en la cuenca del Río Orinoco. "
+        "La partición temporal delimita los datos que los modelos conocen durante el entrenamiento y "
+        "reserva estrictamente el **30% final (Holdout)** como conjunto ciego para la evaluación interactiva."
+    )
+
+    fig_hist = construir_grafica_historica(
+        niveles=niveles_datos,
+        observados=observados_datos,
+        estacion_sel=seleccion_estacion,
+        inicio_holdout=inicio_holdout_calc,
+        fin_holdout=fin_holdout_calc,
+    )
+    st.plotly_chart(fig_hist, use_container_width=True)
+
+    st.markdown("#### 📈 Resumen Estadístico del Período de Entrenamiento")
+    if seleccion_estacion == "Todas las estaciones":
+        cols = st.columns(len(ESTACIONES))
+        for idx, est in enumerate(ESTACIONES):
+            s_train = niveles_datos.loc[niveles_datos.index < inicio_holdout_calc, est]
+            s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_holdout_calc, est]]
+            pct_obs = (len(s_train_obs) / len(s_train) * 100) if len(s_train) > 0 else 0
+            with cols[idx]:
+                st.markdown(f"""
+                <div class="metric-box">
+                    <p style="font-weight: 700; color: #f8fafc; font-size: 0.95rem;">{NOMBRES_ESTACIONES.get(est, est)}</p>
+                    <h3 style="color: {COLORES_ESTACIONES.get(est, '#38bdf8')};">{s_train_obs.mean():.2f} m</h3>
+                    <p>Media Train (Máx: {s_train_obs.max():.2f} m)</p>
+                    <p style="color: #64748b; font-size: 0.75rem;">Cobertura obs: {pct_obs:.1f}%</p>
+                </div>
+                """, unsafe_allow_html=True)
     else:
-        sub_predicciones = predicciones[predicciones["Horizonte"] == horizonte_seleccionado]
-        if seleccion_estacion == "Todas las estaciones":
-            for est in estaciones_disponibles:
-                datos_est = sub_predicciones[sub_predicciones["Estacion"] == est]
-                if not datos_est.empty:
-                    fig_est = construir_grafica_estacion(datos_est, est, modelos_seleccionados, horizonte_seleccionado)
-                    st.plotly_chart(fig_est, use_container_width=True)
-        else:
-            datos_est = sub_predicciones[sub_predicciones["Estacion"] == seleccion_estacion]
-            if not datos_est.empty:
-                fig_est = construir_grafica_estacion(datos_est, seleccion_estacion, modelos_seleccionados, horizonte_seleccionado)
-                st.plotly_chart(fig_est, use_container_width=True)
-            else:
-                st.warning(f"No hay registros disponibles para {NOMBRES_ESTACIONES.get(seleccion_estacion, seleccion_estacion)}.")
+        s_train = niveles_datos.loc[niveles_datos.index < inicio_holdout_calc, seleccion_estacion]
+        s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_holdout_calc, seleccion_estacion]]
+        pct_obs = (len(s_train_obs) / len(s_train) * 100) if len(s_train) > 0 else 0
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{s_train_obs.mean():.2f} m</h3>
+                <p>Nivel Medio (Train)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{s_train_obs.max():.2f} m</h3>
+                <p>Nivel Máximo (Train)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{s_train_obs.min():.2f} m</h3>
+                <p>Nivel Mínimo (Train)</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with c4:
+            st.markdown(f"""
+            <div class="metric-box">
+                <h3>{pct_obs:.1f}%</h3>
+                <p>Días Observados Reales</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.info(
+        "💡 **¿Por qué no hay predicciones automáticas sobre el período Holdout en esta gráfica?**  \n"
+        "Siguiendo las mejores prácticas de ciencia de datos e hidrología operativa, el conjunto de prueba (holdout) "
+        "se mantiene como un **entorno ciego inalterado**. Los modelos no ejecutan inferencia masiva continua por defecto. "
+        "En su lugar, el operador decide en la pestaña **🧪 Simulador de Backtesting** qué modelo evaluar, qué ventana de memoria (lookback) "
+        "asignar y en qué fecha $t_0$ emitir el pronóstico a 14 días para auditar su desempeño real."
+    )
 
 with pestana_mapa:
     st.subheader("Geolocalización de las Estaciones en la Cuenca del Río Orinoco")
@@ -516,7 +585,6 @@ with pestana_backtest:
         "revisando la historia previa observada, el pronóstico continuo a 14 días y el nivel real registrado."
     )
 
-    # Panel de metadatos de la partición
     info_col1, info_col2 = st.columns(2)
     with info_col1:
         st.info(
@@ -530,7 +598,6 @@ with pestana_backtest:
             f"🔒 **Garantía sin fuga:** Entrenamiento restringido estrictamente a $t < t_\\text{{holdout}}$."
         )
 
-    # Panel superior de controles
     with st.container():
         st.markdown("#### ⚙️ Parámetros de Simulación")
         ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1.5, 1.5, 1.5, 1.5])
@@ -555,7 +622,6 @@ with pestana_backtest:
             )
 
         with ctrl3:
-            # Fecha por defecto: fecha media del holdout
             fecha_def = inicio_holdout_calc + (ultimo_origen_valido - inicio_holdout_calc) / 2
             fecha_origen_sel = st.date_input(
                 "Fecha de origen (t₀)",
@@ -582,7 +648,6 @@ with pestana_backtest:
         with col_ejecutar:
             ejecutar_sim = st.button("🚀 Ejecutar simulación", type="primary", use_container_width=True)
 
-    # Tarjeta de Temporada Hidrológica para t0
     t0_timestamp = pd.Timestamp(fecha_origen_sel)
     info_temp = clasificar_temporada(t0_timestamp)
 
@@ -595,7 +660,6 @@ with pestana_backtest:
     </div>
     """, unsafe_allow_html=True)
 
-    # Ejecución o recuperación del estado
     clave_estado = f"sim_{modelo_btest}_{estacion_btest}_{t0_timestamp.strftime('%Y%m%d')}_{lookback_sel}"
 
     if ejecutar_sim:
@@ -620,7 +684,6 @@ with pestana_backtest:
             except Exception as e:
                 st.error(f"❌ Error durante la simulación: {e}")
 
-    # Renderizar resultados si existen en session_state
     if clave_estado in st.session_state:
         simulacion = st.session_state[clave_estado]
         df_preds = simulacion["predicciones"]
@@ -642,7 +705,6 @@ with pestana_backtest:
 
             st.markdown(f"#### 📍 Estación: {nombre_legible}")
 
-            # Métricas en tarjetas
             mc1, mc2, mc3, mc4, mc5 = st.columns(5)
             with mc1:
                 st.markdown(f"""
@@ -684,7 +746,6 @@ with pestana_backtest:
             if sub_met.get("advertencia"):
                 st.warning(f"⚠️ {sub_met['advertencia']}")
 
-            # Gráfica del evento
             fig_evento = construir_grafica_evento(
                 historia=sub_hist,
                 ground_truth=sub_gt,
@@ -696,7 +757,6 @@ with pestana_backtest:
             )
             st.plotly_chart(fig_evento, use_container_width=True)
 
-            # Tabla comparativa diaria
             st.markdown("##### 📋 Detalle Diario del Pronóstico vs Real")
             tabla_mostrar = sub_preds[[
                 "Horizonte", "Fecha", "Real", "Prediccion", "Error", "ErrorAbsoluto", "Observado",
