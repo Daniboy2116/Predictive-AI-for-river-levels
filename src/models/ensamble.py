@@ -5,7 +5,8 @@ from src.configuracion import ESTACIONES_OBJETIVO, HORIZONTE_PRINCIPAL, HORIZONT
 from src.evaluate import cargar_predicciones, evaluar_y_guardar
 
 NOMBRE_ENSAMBLE = "Ensamble"
-MODELOS_EXCLUIDOS = ["Persistencia", "Climatologia", NOMBRE_ENSAMBLE]
+# La persistencia aporta y(t) (cambio cero); la climatología no usa la situación actual
+MODELOS_EXCLUIDOS = ["Persistencia", "Climatologia", "TimesFM", NOMBRE_ENSAMBLE]
 
 
 def tabla_ancha(predicciones: pd.DataFrame, estacion: str, horizonte: int) -> pd.DataFrame:
