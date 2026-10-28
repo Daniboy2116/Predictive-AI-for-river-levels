@@ -58,7 +58,7 @@ def ejecutar_xgboost(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
         modelo = XGBRegressor(
             n_estimators=2000,
             learning_rate=0.03,
-            max_depth=6,
+            max_depth=4,
             subsample=0.8,
             colsample_bytree=0.8,
             objective="reg:absoluteerror",

@@ -5,7 +5,7 @@ from src.configuracion import ESTACIONES_OBJETIVO, HORIZONTES
 from src.evaluate import armar_predicciones, calcular_metricas, evaluar_y_guardar
 from src.preprocessing import cambio_a_nivel, cargar_datos, preparar_datos
 
-VALORES_ALPHA = [0.1, 1.0, 10.0, 100.0, 1000.0]
+VALORES_ALPHA = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
 
 
 def seleccionar_mejor_alpha(x_train: pd.DataFrame, y_train: pd.Series, x_val: pd.DataFrame, y_val: pd.Series) -> float:

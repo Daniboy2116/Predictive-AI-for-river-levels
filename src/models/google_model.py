@@ -140,6 +140,42 @@ def ejecutar_timesfm(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
     )
 
 
+_MODELO_TIMESFM_CACHE = None
+
+
+def obtener_modelo_timesfm(horizonte_maximo: int = MAXIMO_HORIZONTE_TIMESFM) -> TimesFM_2p5_200M_torch:
+    """Retorna una instancia compilada de TimesFM_2p5_200M_torch con reutilización en memoria."""
+    global _MODELO_TIMESFM_CACHE
+    if _MODELO_TIMESFM_CACHE is None:
+        modelo = TimesFM_2p5_200M_torch(torch_compile=False)
+        configuracion = ForecastConfig(
+            max_context=LONGITUD_CONTEXTO_TIMESFM,
+            max_horizon=max(horizonte_maximo, MAXIMO_HORIZONTE_TIMESFM),
+            per_core_batch_size=32,
+            normalize_inputs=True,
+        )
+        modelo.compile(configuracion)
+        _MODELO_TIMESFM_CACHE = modelo
+    return _MODELO_TIMESFM_CACHE
+
+
+def predecir_timesfm_evento(
+    niveles: pd.DataFrame,
+    fecha_origen: pd.Timestamp,
+    horizonte_maximo: int,
+    estacion: str,
+) -> np.ndarray:
+    """Extrae la ventana de contexto e invoca TimesFM_2p5_200M_torch para un evento puntual."""
+    fecha_origen = pd.Timestamp(fecha_origen)
+    posicion = niveles.index.get_loc(fecha_origen)
+    inicio = max(0, posicion - LONGITUD_CONTEXTO_TIMESFM + 1)
+    serie_contexto = niveles[estacion].iloc[inicio:posicion + 1].to_numpy(dtype=np.float32)
+
+    modelo = obtener_modelo_timesfm(horizonte_maximo)
+    pronosticos_matriz, _ = modelo.forecast(horizon=horizonte_maximo, inputs=[serie_contexto])
+    return pronosticos_matriz[0]
+
+
 def ejecutar() -> None:
     """Entrena y evalúa Prophet en todas las estaciones objetivo."""
     niveles, observados = cargar_datos()

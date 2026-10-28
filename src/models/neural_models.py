@@ -59,7 +59,8 @@ class RedCNN1D(nn.Module):
         self.pooling1 = nn.MaxPool1d(kernel_size=2)
         self.bloque3 = BloqueConvolucionCausal(32, 32, dilatacion=4)
         self.pooling2 = nn.MaxPool1d(kernel_size=2)
-        self.capa_densa = nn.Linear(32 * 15, 64)
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.capa_densa = nn.Linear(32, 64)
         self.activacion = nn.ReLU()
         self.capa_salida = nn.Linear(64, numero_salidas)
 
@@ -70,7 +71,7 @@ class RedCNN1D(nn.Module):
         h = self.pooling1(h)
         h = self.bloque3(h)
         h = self.pooling2(h)
-        h = h.reshape(h.shape[0], -1)
+        h = self.global_pool(h).squeeze(-1)
         h = self.activacion(self.capa_densa(h))
         return self.capa_salida(h)
 
@@ -123,7 +124,7 @@ class RedConAtajoLineal(nn.Module):
 def entrenar(modelo: nn.Module, parametros, x_train: torch.Tensor, y_train: torch.Tensor,
              x_val: torch.Tensor, y_val: torch.Tensor) -> tuple:
     funcion_perdida = nn.MSELoss()
-    optimizador = torch.optim.Adam(parametros, lr=TASA_APRENDIZAJE)
+    optimizador = torch.optim.Adam(parametros, lr=TASA_APRENDIZAJE, weight_decay=1e-4)
     generador = torch.Generator().manual_seed(SEMILLA)
     numero_muestras = len(x_train)
     

@@ -47,7 +47,7 @@ def preparar_exogenas(anomalias: pd.DataFrame, estacion: str, rezago: int = REZA
     return exogenas, exogenas_extendidas
 
 
-def seleccionar_orden_arima(anomalia_train: pd.Series, exog_train: pd.DataFrame) -> tuple:
+def seleccionar_orden_arima(anomalia_train: pd.Series, exog_train: pd.DataFrame, d_estimado: int = 0) -> tuple:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         warnings.simplefilter("ignore", UserWarning)
@@ -56,7 +56,7 @@ def seleccionar_orden_arima(anomalia_train: pd.Series, exog_train: pd.DataFrame)
             X=exog_train,
             start_p=1,
             max_p=3,
-            d=0,
+            d=d_estimado,
             start_q=0,
             max_q=2,
             seasonal=False,
@@ -108,10 +108,11 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
     en_train = anomalia_objetivo.index <= pd.Timestamp(FECHA_FIN_TRAIN)
 
     valor_p_adf = adfuller(anomalia_objetivo[en_train].to_numpy(), maxlag=30, result_object=True).pvalue
-    print(f"{estacion.ljust(15)} ADF p-valor = {valor_p_adf:.2e} -> d = 0")
+    d_estimado = 0 if valor_p_adf < 0.05 else 1
+    print(f"{estacion.ljust(15)} ADF p-valor = {valor_p_adf:.2e} -> d = {d_estimado}")
 
     # === Definición del modelo ===
-    mejor_orden = seleccionar_orden_arima(anomalia_objetivo[en_train], exogenas[en_train])
+    mejor_orden = seleccionar_orden_arima(anomalia_objetivo[en_train], exogenas[en_train], d_estimado=d_estimado)
     print(f"{estacion.ljust(15)} orden AutoARIMA elegido: {mejor_orden}")
     modelo = SARIMAX(anomalia_objetivo[en_train], exog=exogenas[en_train], order=mejor_orden, trend="n")
 
