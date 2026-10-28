@@ -143,3 +143,4 @@ def test_simulacion_evento_estructura_y_coherencia():
     historia = resultado["historia"]
     assert historia["Fecha"].min() == t0 - pd.Timedelta(days=60)
     assert historia["Fecha"].max() == t0
+

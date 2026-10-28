@@ -497,3 +497,4 @@ def obtener_modelo_backtest(
 
     _CACHE_MODELOS[clave] = modelo
     return modelo
+
