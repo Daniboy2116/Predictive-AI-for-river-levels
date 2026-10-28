@@ -1,18 +1,4 @@
-"""Modelo estadístico SARIMAX: anomalía ARMA + estaciones aguas arriba como exógenas.
-
-Nivel(t) = climatología(t) + anomalía(t), y la anomalía se modela como:
-
-    anomalía(t) = β · [anomalías aguas arriba en t - 15] + u(t),   u(t) ~ ARMA(p, q)
-
-- La "S" (estacionalidad) la aporta la climatología armónica ajustada con train.
-- La "X" son las anomalías de las otras estaciones con 15 días de retraso: así,
-  para pronosticar hasta 15 días, todas las exógenas futuras ya se conocen en t.
-- ARMA(p, q): p anomalías pasadas (AR) y q errores pasados (MA).
-
-Ejecutar:  python -m src.models.arima_model
-"""
 import warnings
-
 import numpy as np
 import pandas as pd
 from pmdarima.arima import auto_arima
@@ -20,60 +6,54 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller
 
-from src.configuracion import ESTACIONES, ESTACIONES_OBJETIVO, FECHA_FIN_TRAIN, HORIZONTE_PRINCIPAL, HORIZONTES
+from src.configuracion import (
+    ESTACIONES,
+    ESTACIONES_OBJETIVO,
+    FECHA_FIN_TRAIN,
+    HORIZONTE_PRINCIPAL,
+    HORIZONTES,
+)
 from src.evaluate import armar_predicciones, evaluar_y_guardar
-from src.preprocessing import ajustar_climatologias, cargar_datos, evaluar_climatologia, preparar_datos
+from src.preprocessing import (
+    ajustar_climatologias,
+    cargar_datos,
+    evaluar_climatologia,
+    preparar_datos,
+)
 
-# Configuración de búsqueda AutoARIMA (d = 0 porque la anomalía es estacionaria: prueba ADF)
 REZAGO_EXOGENAS = HORIZONTE_PRINCIPAL
 
 
-def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str) -> dict:
-    """Busca el mejor orden, entrena SARIMAX y pronostica 1..15 días desde cada día de validación y prueba.
-
-    Returns:
-        Métricas de prueba por horizonte (ver ``evaluar_y_guardar``).
-    """
-    # === PASO 1: PREPARACIÓN DE DATOS ===
-    # [JUSTIFICACIÓN]: SARIMAX no usa la tabla de 79 variables. Trabaja sobre la serie
-    # temporal de la anomalía (en metros, sin escalar) y recibe aparte las exógenas.
-    climatologias = ajustar_climatologias(niveles, observados)
+def calcular_anomalias(niveles: pd.DataFrame, climatologias: dict) -> pd.DataFrame:
     anomalias = pd.DataFrame(index=niveles.index)
     for nombre in ESTACIONES:
         anomalias[nombre] = niveles[nombre] - evaluar_climatologia(climatologias[nombre], niveles.index)
+    return anomalias
 
-    otras_estaciones = []
-    nombres_exogenas = []
-    for nombre in ESTACIONES:
-        if nombre != estacion:
-            otras_estaciones.append(nombre)
-            nombres_exogenas.append(nombre + "_t-" + str(REZAGO_EXOGENAS))
-    # Las exógenas se extienden 15 días más allá del último dato: como están rezagadas
-    # 15 días, para pronosticar del día t+1 al t+15 solo hacen falta datos hasta t.
-    ultimo_dia = niveles.index[-1]
-    fechas_extendidas = pd.date_range(niveles.index[0], ultimo_dia + pd.Timedelta(days=REZAGO_EXOGENAS), freq="D")
-    exogenas_extendidas = anomalias[otras_estaciones].reindex(fechas_extendidas).shift(REZAGO_EXOGENAS)
-    exogenas_extendidas.columns = nombres_exogenas
 
-    # Los primeros días no tienen exógenas (no hay datos 15 días antes): se descartan
-    anomalia_objetivo = anomalias[estacion].iloc[REZAGO_EXOGENAS:]
-    exogenas_extendidas = exogenas_extendidas.iloc[REZAGO_EXOGENAS:]
+def preparar_exogenas(anomalias: pd.DataFrame, estacion: str, rezago: int = REZAGO_EXOGENAS) -> tuple[pd.DataFrame, pd.DataFrame]:
+    otras_estaciones = [e for e in ESTACIONES if e != estacion]
+    nombres_cols = [f"{e}_t-{rezago}" for e in otras_estaciones]
+    
+    ultimo_dia = anomalias.index[-1]
+    fechas_extendidas = pd.date_range(anomalias.index[0], ultimo_dia + pd.Timedelta(days=rezago), freq="D")
+    
+    exogenas_extendidas = anomalias[otras_estaciones].reindex(fechas_extendidas).shift(rezago)
+    exogenas_extendidas.columns = nombres_cols
+    
+    exogenas_extendidas = exogenas_extendidas.iloc[rezago:]
     exogenas = exogenas_extendidas.loc[:ultimo_dia]
-    en_train = anomalia_objetivo.index <= pd.Timestamp(FECHA_FIN_TRAIN)
+    
+    return exogenas, exogenas_extendidas
 
-    # Prueba de Dickey-Fuller aumentada: p < 0.05 indica serie estacionaria (no hace falta diferenciar)
-    valor_p_adf = adfuller(anomalia_objetivo[en_train].to_numpy(), maxlag=30, result_object=True).pvalue
-    print(estacion.ljust(15), "ADF p-valor = %.2e -> d = 0" % valor_p_adf)
 
-    # === PASO 2: DEFINICIÓN / CONFIGURACIÓN DEL MODELO ===
-    # [JUSTIFICACIÓN]: usamos AutoARIMA (pmdarima) para buscar y seleccionar automáticamente
-    # el orden óptimo (p, d, q) sobre el conjunto de entrenamiento minimizando el AIC.
+def seleccionar_orden_arima(anomalia_train: pd.Series, exog_train: pd.DataFrame) -> tuple:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         warnings.simplefilter("ignore", UserWarning)
         modelo_auto = auto_arima(
-            anomalia_objetivo[en_train],
-            X=exogenas[en_train],
+            anomalia_train,
+            X=exog_train,
             start_p=1,
             max_p=3,
             d=0,
@@ -84,22 +64,64 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
             suppress_warnings=True,
             error_action="ignore",
         )
-    mejor_orden = modelo_auto.order
-    print(estacion.ljust(15), "orden AutoARIMA elegido:", mejor_orden)
+    return modelo_auto.order
+
+
+def generar_pronosticos_dinamicos(
+    modelo_entrenado,
+    anomalia_serie: pd.Series,
+    exogenas: pd.DataFrame,
+    exogenas_extendidas: pd.DataFrame,
+    origenes: set,
+    maximo_horizonte: int = max(HORIZONTES),
+) -> pd.DataFrame:
+    modelo_aplicado = modelo_entrenado.apply(anomalia_serie, exog=exogenas)
+    ultima_posicion = len(anomalia_serie) - 1
+    pronosticos = {}
+
+    for origen in sorted(origenes):
+        posicion = anomalia_serie.index.get_loc(origen)
+        fin = posicion + maximo_horizonte
+
+        if fin <= ultima_posicion:
+            pred = modelo_aplicado.get_prediction(start=posicion + 1, end=fin, dynamic=0)
+        else:
+            exog_futuras = exogenas_extendidas.iloc[ultima_posicion + 1:fin + 1]
+            pred = modelo_aplicado.get_prediction(
+                start=posicion + 1,
+                end=fin,
+                dynamic=0,
+                exog=exog_futuras,
+            )
+        pronosticos[origen] = pred.predicted_mean.to_numpy()
+
+    return pd.DataFrame.from_dict(pronosticos, orient="index", columns=range(1, maximo_horizonte + 1))
+
+
+def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str) -> dict:
+    # === Preparación de datos ===
+    climatologias = ajustar_climatologias(niveles, observados)
+    anomalias = calcular_anomalias(niveles, climatologias)
+    exogenas, exogenas_extendidas = preparar_exogenas(anomalias, estacion, REZAGO_EXOGENAS)
+    
+    anomalia_objetivo = anomalias[estacion].iloc[REZAGO_EXOGENAS:]
+    en_train = anomalia_objetivo.index <= pd.Timestamp(FECHA_FIN_TRAIN)
+
+    valor_p_adf = adfuller(anomalia_objetivo[en_train].to_numpy(), maxlag=30, result_object=True).pvalue
+    print(f"{estacion.ljust(15)} ADF p-valor = {valor_p_adf:.2e} -> d = 0")
+
+    # === Definición del modelo ===
+    mejor_orden = seleccionar_orden_arima(anomalia_objetivo[en_train], exogenas[en_train])
+    print(f"{estacion.ljust(15)} orden AutoARIMA elegido: {mejor_orden}")
     modelo = SARIMAX(anomalia_objetivo[en_train], exog=exogenas[en_train], order=mejor_orden, trend="n")
 
-    # === PASO 3: ENTRENAMIENTO ===
+    # === Entrenamiento ===
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         warnings.simplefilter("ignore", UserWarning)
         modelo_entrenado = modelo.fit(disp=False)
 
-    # === PASO 4: PREDICCIÓN E INVERSIÓN DE ESCALA ===
-    # [JUSTIFICACIÓN]: aplicamos los MISMOS parámetros a la serie completa (sin reentrenar)
-    # y, desde cada día de emisión t, pedimos el pronóstico dinámico de t+1 a t+15: cada
-    # paso usa sus propias predicciones, nunca datos reales posteriores a t.
-    modelo_serie_completa = modelo_entrenado.apply(anomalia_objetivo, exog=exogenas)
-
+    # === Evaluación ===
     tablas_por_horizonte = {}
     origenes = set()
     for horizonte in HORIZONTES:
@@ -109,49 +131,40 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
         origenes.update(datos["tabla_test"].index)
         origenes.update(datos["tabla_futuro"].index)
 
-    maximo_horizonte = max(HORIZONTES)
-    ultima_posicion = len(anomalia_objetivo) - 1
-    pronosticos = {}
-    for origen in sorted(origenes):
-        posicion = anomalia_objetivo.index.get_loc(origen)
-        fin = posicion + maximo_horizonte
-        if fin <= ultima_posicion:
-            prediccion = modelo_serie_completa.get_prediction(start=posicion + 1, end=fin, dynamic=0)
-        else:
-            # Pronóstico operativo: los días posteriores al último dato necesitan sus exógenas
-            exogenas_futuras = exogenas_extendidas.iloc[ultima_posicion + 1:fin + 1]
-            prediccion = modelo_serie_completa.get_prediction(start=posicion + 1, end=fin, dynamic=0,
-                                                              exog=exogenas_futuras)
-        pronosticos[origen] = prediccion.predicted_mean.to_numpy()
-    pronosticos = pd.DataFrame.from_dict(pronosticos, orient="index", columns=range(1, maximo_horizonte + 1))
+    pronosticos_anomalia = generar_pronosticos_dinamicos(
+        modelo_entrenado,
+        anomalia_objetivo,
+        exogenas,
+        exogenas_extendidas,
+        origenes,
+    )
 
-    # Inversión: nivel(t + h) = climatología(t + h) + anomalía pronosticada
-    predicciones_val_auto = []
-    predicciones_test_auto = []
-    predicciones_val_sari = []
-    predicciones_test_sari = []
+    predicciones_val = []
+    predicciones_test = []
+
     for horizonte in HORIZONTES:
         datos = tablas_por_horizonte[horizonte]
         for conjunto in ["val", "test", "futuro"]:
             tabla = datos["tabla_" + conjunto]
-            anomalia_predicha = pronosticos.loc[tabla.index, horizonte].to_numpy()
-            fechas_objetivo = pd.DatetimeIndex(tabla["fecha_objetivo"])
-            nivel_predicho = evaluar_climatologia(climatologias[estacion], fechas_objetivo) + anomalia_predicha
-            res_auto = armar_predicciones(tabla, nivel_predicho, estacion, "AutoARIMA", horizonte)
-            res_sari = armar_predicciones(tabla, nivel_predicho, estacion, "SARIMAX", horizonte)
-            if conjunto == "val":
-                predicciones_val_auto.append(res_auto)
-                predicciones_val_sari.append(res_sari)
-            else:
-                predicciones_test_auto.append(res_auto)
-                predicciones_test_sari.append(res_sari)
+            anomalia_pred = pronosticos_anomalia.loc[tabla.index, horizonte].to_numpy()
+            fechas_obj = pd.DatetimeIndex(tabla["fecha_objetivo"])
+            nivel_pred = evaluar_climatologia(climatologias[estacion], fechas_obj) + anomalia_pred
+            
+            res = armar_predicciones(tabla, nivel_pred, estacion, "AutoARIMA", horizonte)
 
-    evaluar_y_guardar(estacion, "AutoARIMA", pd.concat(predicciones_val_auto), pd.concat(predicciones_test_auto))
-    return evaluar_y_guardar(estacion, "SARIMAX", pd.concat(predicciones_val_sari), pd.concat(predicciones_test_sari))
+            if conjunto == "val":
+                predicciones_val.append(res)
+            else:
+                predicciones_test.append(res)
+
+    evaluar_y_guardar(estacion, "AutoARIMA", pd.concat(predicciones_val), pd.concat(predicciones_test))
+    
+    val_sari = [r.assign(Modelo="SARIMAX") for r in predicciones_val]
+    test_sari = [r.assign(Modelo="SARIMAX") for r in predicciones_test]
+    return evaluar_y_guardar(estacion, "SARIMAX", pd.concat(val_sari), pd.concat(test_sari))
 
 
 def ejecutar() -> None:
-    """Entrena y evalúa SARIMAX en todas las estaciones objetivo."""
     niveles, observados = cargar_datos()
     for estacion in ESTACIONES_OBJETIVO:
         ejecutar_sarimax(niveles, observados, estacion)

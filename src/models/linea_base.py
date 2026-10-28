@@ -1,14 +1,3 @@
-"""Modelos de referencia (líneas base): lo mínimo que cualquier modelo debe superar.
-
-- Persistencia: "dentro de h días el río estará igual que hoy".
-- Climatología armónica: "el río estará en su nivel típico de esa fecha".
-- Anomalía amortiguada: "el nivel típico de esa fecha más una fracción de la
-  desviación de hoy", porque las anomalías se van apagando con el tiempo.
-
-Un modelo de IA solo aporta valor si mejora claramente estas referencias.
-
-Ejecutar:  python -m src.models.linea_base
-"""
 import numpy as np
 import pandas as pd
 
@@ -17,100 +6,97 @@ from src.evaluate import armar_predicciones, evaluar_y_guardar
 from src.preprocessing import cambio_a_nivel, cargar_datos, preparar_datos
 
 
+def _generar_predicciones(datos: dict, cambio_predicho_dict: dict, estacion: str, nombre_modelo: str, horizonte: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    pred_val, pred_test = [], []
+    for conjunto in ["val", "test", "futuro"]:
+        tabla = datos["tabla_" + conjunto]
+        cambio = cambio_predicho_dict[conjunto]
+        nivel = cambio_a_nivel(tabla["nivel_actual"], cambio)
+        res = armar_predicciones(tabla, nivel, estacion, nombre_modelo, horizonte)
+        if conjunto == "val":
+            pred_val.append(res)
+        else:
+            pred_test.append(res)
+    return pd.concat(pred_val), pd.concat(pred_test)
+
+
 def ejecutar_persistencia(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str) -> dict:
-    """Persistencia: ŷ(t + h) = y(t)."""
-    predicciones_val = []
-    predicciones_test = []
+    val_totales, test_totales = [], []
     for horizonte in HORIZONTES:
-        # === PASO 1: PREPARACIÓN DE DATOS ===
+        # === Preparación de datos ===
         datos = preparar_datos(niveles, observados, estacion, horizonte)
 
-        # === PASO 2: DEFINICIÓN DEL MODELO ===
-        # El cambio pronosticado es siempre cero.
+        # === Definición del modelo ===
+        pass
 
-        # === PASO 3: ENTRENAMIENTO ===
-        # [JUSTIFICACIÓN]: la persistencia no tiene parámetros, no hay nada que entrenar.
+        # === Entrenamiento ===
+        pass
 
-        # === PASO 4: PREDICCIÓN (YA EN METROS) ===
-        for conjunto in ["val", "test", "futuro"]:
-            tabla = datos["tabla_" + conjunto]
-            cambio_predicho = np.zeros(len(tabla))
-            nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)
-            resultado = armar_predicciones(tabla, nivel_predicho, estacion, "Persistencia", horizonte)
-            if conjunto == "val":
-                predicciones_val.append(resultado)
-            else:
-                predicciones_test.append(resultado)
+        # === Evaluación ===
+        cambios = {c: np.zeros(len(datos["tabla_" + c])) for c in ["val", "test", "futuro"]}
+        val_h, test_h = _generar_predicciones(datos, cambios, estacion, "Persistencia", horizonte)
+        val_totales.append(val_h)
+        test_totales.append(test_h)
 
-    return evaluar_y_guardar(estacion, "Persistencia", pd.concat(predicciones_val), pd.concat(predicciones_test))
+    return evaluar_y_guardar(estacion, "Persistencia", pd.concat(val_totales), pd.concat(test_totales))
 
 
 def ejecutar_climatologia(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str) -> dict:
-    """Climatología armónica: ŷ(t + h) = climatología(t + h)."""
-    predicciones_val = []
-    predicciones_test = []
+    val_totales, test_totales = [], []
     for horizonte in HORIZONTES:
-        # === PASO 1: PREPARACIÓN DE DATOS ===
+        # === Preparación de datos ===
         datos = preparar_datos(niveles, observados, estacion, horizonte)
-        columna_anomalia = estacion + "_anomalia"
+        col_anomalia = estacion + "_anomalia"
 
-        # === PASO 2: DEFINICIÓN DEL MODELO ===
-        # climatología(t + h) - y(t) = [climatología(t + h) - climatología(t)] - anomalía(t)
+        # === Definición del modelo ===
+        pass
 
-        # === PASO 3: ENTRENAMIENTO ===
-        # [JUSTIFICACIÓN]: la climatología ya se ajustó con train dentro de preparar_datos
-        # (regresión armónica con K = 2); aquí solo se usa.
+        # === Entrenamiento ===
+        pass
 
-        # === PASO 4: PREDICCIÓN (YA EN METROS) ===
-        for conjunto in ["val", "test", "futuro"]:
-            tabla = datos["tabla_" + conjunto]
-            cambio_predicho = tabla["climatologia_cambio_esperado"] - tabla[columna_anomalia]
-            nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)
-            resultado = armar_predicciones(tabla, nivel_predicho, estacion, "Climatologia", horizonte)
-            if conjunto == "val":
-                predicciones_val.append(resultado)
-            else:
-                predicciones_test.append(resultado)
+        # === Evaluación ===
+        cambios = {}
+        for c in ["val", "test", "futuro"]:
+            tabla = datos["tabla_" + c]
+            cambios[c] = tabla["climatologia_cambio_esperado"] - tabla[col_anomalia]
 
-    return evaluar_y_guardar(estacion, "Climatologia", pd.concat(predicciones_val), pd.concat(predicciones_test))
+        val_h, test_h = _generar_predicciones(datos, cambios, estacion, "Climatologia", horizonte)
+        val_totales.append(val_h)
+        test_totales.append(test_h)
+
+    return evaluar_y_guardar(estacion, "Climatologia", pd.concat(val_totales), pd.concat(test_totales))
 
 
 def ejecutar_anomalia_amortiguada(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: str) -> dict:
-    """Anomalía amortiguada: ŷ(t + h) = climatología(t + h) + φ_h · anomalía(t)."""
-    predicciones_val = []
-    predicciones_test = []
+    val_totales, test_totales = [], []
     for horizonte in HORIZONTES:
-        # === PASO 1: PREPARACIÓN DE DATOS ===
+        # === Preparación de datos ===
         datos = preparar_datos(niveles, observados, estacion, horizonte)
-        columna_anomalia = estacion + "_anomalia"
+        col_anomalia = estacion + "_anomalia"
         tabla_train = datos["tabla_train"]
 
-        # === PASO 2: DEFINICIÓN DEL MODELO ===
-        # La anomalía de dentro de h días es una fracción φ_h de la de hoy (0 < φ_h < 1).
+        # === Definición del modelo ===
+        pass
 
-        # === PASO 3: ENTRENAMIENTO ===
-        # φ_h es la pendiente (sin intercepto) entre la anomalía de hoy y la de t + h en train.
-        anomalia_hoy = tabla_train[columna_anomalia]
+        # === Entrenamiento ===
+        anomalia_hoy = tabla_train[col_anomalia]
         anomalia_futura = anomalia_hoy + tabla_train["cambio"] - tabla_train["climatologia_cambio_esperado"]
         phi = float((anomalia_hoy * anomalia_futura).sum() / (anomalia_hoy ** 2).sum())
 
-        # === PASO 4: PREDICCIÓN (YA EN METROS) ===
-        for conjunto in ["val", "test", "futuro"]:
-            tabla = datos["tabla_" + conjunto]
-            cambio_predicho = tabla["climatologia_cambio_esperado"] - (1.0 - phi) * tabla[columna_anomalia]
-            nivel_predicho = cambio_a_nivel(tabla["nivel_actual"], cambio_predicho)
-            resultado = armar_predicciones(tabla, nivel_predicho, estacion, "AnomaliaAmortiguada", horizonte)
-            if conjunto == "val":
-                predicciones_val.append(resultado)
-            else:
-                predicciones_test.append(resultado)
+        # === Evaluación ===
+        cambios = {}
+        for c in ["val", "test", "futuro"]:
+            tabla = datos["tabla_" + c]
+            cambios[c] = tabla["climatologia_cambio_esperado"] - (1.0 - phi) * tabla[col_anomalia]
 
-    return evaluar_y_guardar(estacion, "AnomaliaAmortiguada", pd.concat(predicciones_val),
-                             pd.concat(predicciones_test))
+        val_h, test_h = _generar_predicciones(datos, cambios, estacion, "AnomaliaAmortiguada", horizonte)
+        val_totales.append(val_h)
+        test_totales.append(test_h)
+
+    return evaluar_y_guardar(estacion, "AnomaliaAmortiguada", pd.concat(val_totales), pd.concat(test_totales))
 
 
 def ejecutar() -> None:
-    """Evalúa las tres líneas base en todas las estaciones objetivo."""
     niveles, observados = cargar_datos()
     for estacion in ESTACIONES_OBJETIVO:
         ejecutar_persistencia(niveles, observados, estacion)
