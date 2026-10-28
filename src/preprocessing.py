@@ -296,6 +296,121 @@ def cambio_a_nivel(nivel_actual, cambio_predicho) -> np.ndarray:
     return np.asarray(nivel_actual, dtype=float) + np.asarray(cambio_predicho, dtype=float)
 
 
+def preparar_datos_backtest(
+    niveles: pd.DataFrame,
+    observados: pd.DataFrame,
+    estacion_objetivo: str,
+    inicio_holdout: pd.Timestamp,
+    horizonte: int,
+) -> dict:
+    """Prepara variables tabulares para backtesting ajustando climatología y escalador solo con train."""
+    corte_train = pd.Timestamp(inicio_holdout)
+    dia_en_train = niveles.index < corte_train
+
+    # Ajustar climatología SOLO con datos estrictamente anteriores a inicio_holdout
+    climatologias = {}
+    for est in ESTACIONES:
+        usar = dia_en_train & observados[est].to_numpy()
+        matriz = variables_calendario(niveles.index[usar], ARMONICOS_CLIMATOLOGIA).to_numpy()
+        matriz = np.column_stack([np.ones(len(matriz)), matriz])
+        coefs, _, _, _ = np.linalg.lstsq(matriz, niveles[est].to_numpy()[usar], rcond=None)
+        climatologias[est] = coefs
+
+    tabla = construir_tabla(niveles, observados, climatologias, estacion_objetivo, horizonte)
+    variables = nombres_variables(tabla)
+
+    sin_objetivo = tabla["nivel_objetivo"].isna()
+    tabla_con_obj = tabla[~sin_objetivo]
+    tabla_train = tabla_con_obj[tabla_con_obj["fecha_objetivo"] < corte_train]
+    tabla_holdout = tabla_con_obj[tabla_con_obj["fecha_objetivo"] >= corte_train]
+
+    escalador = StandardScaler()
+    escalador.fit(tabla_train[variables])
+
+    x_train = pd.DataFrame(escalador.transform(tabla_train[variables]), index=tabla_train.index, columns=variables)
+    x_holdout = pd.DataFrame(escalador.transform(tabla_holdout[variables]), index=tabla_holdout.index, columns=variables)
+
+    return {
+        "estacion": estacion_objetivo,
+        "horizonte": horizonte,
+        "variables": variables,
+        "climatologias": climatologias,
+        "escalador": escalador,
+        "tabla_train": tabla_train,
+        "tabla_holdout": tabla_holdout,
+        "tabla_completa": tabla,
+        "x_train": x_train,
+        "y_train": tabla_train["cambio"],
+        "x_holdout": x_holdout,
+        "y_holdout": tabla_holdout["cambio"],
+    }
+
+
+def preparar_ventanas_backtest(
+    niveles: pd.DataFrame,
+    observados: pd.DataFrame,
+    estacion_objetivo: str,
+    longitud_ventana: int,
+    inicio_holdout: pd.Timestamp,
+    maximo_horizonte: int,
+) -> dict:
+    """Prepara tensores de ventanas para redes neuronales garantizando cero fuga del holdout."""
+    corte_train = pd.Timestamp(inicio_holdout)
+    dia_en_train = niveles.index < corte_train
+
+    climatologias = {}
+    for est in ESTACIONES:
+        usar = dia_en_train & observados[est].to_numpy()
+        matriz = variables_calendario(niveles.index[usar], ARMONICOS_CLIMATOLOGIA).to_numpy()
+        matriz = np.column_stack([np.ones(len(matriz)), matriz])
+        coefs, _, _, _ = np.linalg.lstsq(matriz, niveles[est].to_numpy()[usar], rcond=None)
+        climatologias[est] = coefs
+
+    canales = pd.DataFrame(index=niveles.index)
+    for estacion in ESTACIONES:
+        canales[estacion + "_nivel"] = niveles[estacion]
+        climatologia = evaluar_climatologia(climatologias[estacion], niveles.index)
+        canales[estacion + "_anomalia"] = niveles[estacion] - climatologia
+    calendario = variables_calendario(niveles.index, 1)
+    canales["sen_1"] = calendario["sen_1"]
+    canales["cos_1"] = calendario["cos_1"]
+
+    escalador_canales = StandardScaler()
+    escalador_canales.fit(canales.loc[dia_en_train])
+    canales_escalados = escalador_canales.transform(canales).astype(np.float32)
+
+    ventanas = np.lib.stride_tricks.sliding_window_view(canales_escalados, longitud_ventana, axis=0)
+    ventanas = np.ascontiguousarray(ventanas.transpose(0, 2, 1))
+    origenes = niveles.index[longitud_ventana - 1:]
+
+    serie_objetivo = niveles[estacion_objetivo]
+    cambios = pd.DataFrame(index=niveles.index)
+    for paso in range(1, maximo_horizonte + 1):
+        cambios[paso] = serie_objetivo.shift(-paso) - serie_objetivo
+    cambios = cambios.loc[origenes].to_numpy()
+
+    fecha_mas_lejana = origenes + pd.Timedelta(days=maximo_horizonte)
+    fecha_mas_cercana = origenes + pd.Timedelta(days=1)
+    en_train = np.asarray(fecha_mas_lejana < corte_train)
+    en_holdout = np.asarray(fecha_mas_cercana >= corte_train)
+
+    escalador_objetivo = StandardScaler()
+    escalador_objetivo.fit(cambios[en_train])
+    cambios_escalados = escalador_objetivo.transform(cambios).astype(np.float32)
+
+    return {
+        "ventanas": ventanas,
+        "origenes": origenes,
+        "cambios_escalados": cambios_escalados,
+        "escalador_objetivo": escalador_objetivo,
+        "escalador_canales": escalador_canales,
+        "en_train": en_train,
+        "en_holdout": en_holdout,
+        "canales": list(canales.columns),
+        "climatologias": climatologias,
+    }
+
+
 if __name__ == "__main__":
     crudos = leer_excel()
     print("Datos crudos:", crudos.shape, "| NaN por estación:", crudos.isna().sum().to_dict())
