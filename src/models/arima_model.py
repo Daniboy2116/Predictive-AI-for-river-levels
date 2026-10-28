@@ -15,6 +15,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
+from pmdarima.arima import auto_arima
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller
@@ -23,9 +24,7 @@ from src.configuracion import ESTACIONES, ESTACIONES_OBJETIVO, FECHA_FIN_TRAIN, 
 from src.evaluate import armar_predicciones, evaluar_y_guardar
 from src.preprocessing import ajustar_climatologias, cargar_datos, evaluar_climatologia, preparar_datos
 
-# Órdenes ARMA que se prueban (d = 0 porque la anomalía es estacionaria: prueba ADF)
-VALORES_P = [1, 2, 3]
-VALORES_Q = [0, 1]
+# Configuración de búsqueda AutoARIMA (d = 0 porque la anomalía es estacionaria: prueba ADF)
 REZAGO_EXOGENAS = HORIZONTE_PRINCIPAL
 
 
@@ -67,24 +66,26 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
     print(estacion.ljust(15), "ADF p-valor = %.2e -> d = 0" % valor_p_adf)
 
     # === PASO 2: DEFINICIÓN / CONFIGURACIÓN DEL MODELO ===
-    # [JUSTIFICACIÓN]: en SARIMAX "definir el modelo" es elegir el orden (p, 0, q).
-    # Probamos varias combinaciones SOLO con train y nos quedamos con la de menor AIC.
-    mejor_orden = (1, 0, 0)
-    mejor_aic = float("inf")
-    for p in VALORES_P:
-        for q in VALORES_Q:
-            orden = (p, 0, q)
-            # statsmodels avisa de problemas de convergencia en órdenes de prueba;
-            # los silenciamos SOLO dentro de este bloque para que la salida sea legible.
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", ConvergenceWarning)
-                warnings.simplefilter("ignore", UserWarning)
-                resultado_prueba = SARIMAX(anomalia_objetivo[en_train], exog=exogenas[en_train],
-                                           order=orden, trend="n").fit(disp=False)
-            if resultado_prueba.aic < mejor_aic:
-                mejor_aic = resultado_prueba.aic
-                mejor_orden = orden
-    print(estacion.ljust(15), "orden SARIMAX elegido:", mejor_orden)
+    # [JUSTIFICACIÓN]: usamos AutoARIMA (pmdarima) para buscar y seleccionar automáticamente
+    # el orden óptimo (p, d, q) sobre el conjunto de entrenamiento minimizando el AIC.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        warnings.simplefilter("ignore", UserWarning)
+        modelo_auto = auto_arima(
+            anomalia_objetivo[en_train],
+            X=exogenas[en_train],
+            start_p=1,
+            max_p=3,
+            d=0,
+            start_q=0,
+            max_q=2,
+            seasonal=False,
+            stepwise=True,
+            suppress_warnings=True,
+            error_action="ignore",
+        )
+    mejor_orden = modelo_auto.order
+    print(estacion.ljust(15), "orden AutoARIMA elegido:", mejor_orden)
     modelo = SARIMAX(anomalia_objetivo[en_train], exog=exogenas[en_train], order=mejor_orden, trend="n")
 
     # === PASO 3: ENTRENAMIENTO ===
@@ -125,8 +126,10 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
     pronosticos = pd.DataFrame.from_dict(pronosticos, orient="index", columns=range(1, maximo_horizonte + 1))
 
     # Inversión: nivel(t + h) = climatología(t + h) + anomalía pronosticada
-    predicciones_val = []
-    predicciones_test = []
+    predicciones_val_auto = []
+    predicciones_test_auto = []
+    predicciones_val_sari = []
+    predicciones_test_sari = []
     for horizonte in HORIZONTES:
         datos = tablas_por_horizonte[horizonte]
         for conjunto in ["val", "test", "futuro"]:
@@ -134,13 +137,17 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
             anomalia_predicha = pronosticos.loc[tabla.index, horizonte].to_numpy()
             fechas_objetivo = pd.DatetimeIndex(tabla["fecha_objetivo"])
             nivel_predicho = evaluar_climatologia(climatologias[estacion], fechas_objetivo) + anomalia_predicha
-            resultado = armar_predicciones(tabla, nivel_predicho, estacion, "SARIMAX", horizonte)
+            res_auto = armar_predicciones(tabla, nivel_predicho, estacion, "AutoARIMA", horizonte)
+            res_sari = armar_predicciones(tabla, nivel_predicho, estacion, "SARIMAX", horizonte)
             if conjunto == "val":
-                predicciones_val.append(resultado)
+                predicciones_val_auto.append(res_auto)
+                predicciones_val_sari.append(res_sari)
             else:
-                predicciones_test.append(resultado)
+                predicciones_test_auto.append(res_auto)
+                predicciones_test_sari.append(res_sari)
 
-    return evaluar_y_guardar(estacion, "SARIMAX", pd.concat(predicciones_val), pd.concat(predicciones_test))
+    evaluar_y_guardar(estacion, "AutoARIMA", pd.concat(predicciones_val_auto), pd.concat(predicciones_test_auto))
+    return evaluar_y_guardar(estacion, "SARIMAX", pd.concat(predicciones_val_sari), pd.concat(predicciones_test_sari))
 
 
 def ejecutar() -> None:

@@ -17,11 +17,11 @@ from src.preprocessing import cargar_datos, leer_excel, revisar_calidad
 COLORES_MODELOS = {
     "Persistencia": "#94a3b8", "Climatologia": "#64748b", "AnomaliaAmortiguada": "#cbd5e1",
     "Ridge": "#38bdf8", "RandomForest": "#22c55e", "XGBoost": "#10b981", "LightGBM": "#a3e635",
-    "SARIMAX": "#f59e0b", "Prophet": "#fb923c", "LSTM": "#a78bfa", "CNN1D": "#f472b6",
-    "Transformer": "#60a5fa", "Ensamble": "#facc15",
+    "SARIMAX": "#f59e0b", "AutoARIMA": "#d97706", "TimesFM": "#ea4335", "Prophet": "#fb923c",
+    "LSTM": "#a78bfa", "CNN1D": "#f472b6", "Transformer": "#60a5fa", "Ensamble": "#facc15",
 }
 COLORES_ESTACIONES = {"Ayacucho": "#a78bfa", "Caicara": "#38bdf8", "Ciudad_Bolivar": "#f59e0b", "Palua": "#22c55e"}
-MODELOS_POR_DEFECTO = ["Persistencia", "Ridge", "LightGBM", "Ensamble"]
+MODELOS_POR_DEFECTO = ["Persistencia", "Ridge", "LightGBM", "TimesFM", "Ensamble"]
 ESTILO = """
 <style>
 .stApp { background: radial-gradient(1200px 600px at 10% -10%, #0e3a5c 0%, transparent 60%),
