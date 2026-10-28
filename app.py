@@ -21,7 +21,7 @@ COLORES_MODELOS = {
     "LSTM": "#a78bfa", "CNN1D": "#f472b6", "Transformer": "#60a5fa", "Ensamble": "#facc15",
 }
 COLORES_ESTACIONES = {"Ayacucho": "#a78bfa", "Caicara": "#38bdf8", "Ciudad_Bolivar": "#f59e0b", "Palua": "#22c55e"}
-MODELOS_POR_DEFECTO = ["Persistencia", "Ridge", "LightGBM", "TimesFM", "Ensamble"]
+MODELOS_POR_DEFECTO = ["Persistencia", "Ridge", "LightGBM", "AutoARIMA", "Prophet", "Ensamble"]
 ESTILO = """
 <style>
 .stApp { background: radial-gradient(1200px 600px at 10% -10%, #0e3a5c 0%, transparent 60%),
