@@ -574,7 +574,10 @@ class ModeloRedNeuronal:
         canales["cos_1"] = cal["cos_1"]
 
         ventana_arr = escalador_canales.transform(canales).astype(np.float32)
-        tensor_x = torch.from_numpy(ventana_arr).unsqueeze(0).transpose(1, 2)
+        # Las ventanas de entrenamiento tienen forma (muestras, días, canales).
+        # Mantener ese orden es obligatorio para LSTM y Transformer; CNN1D
+        # realiza su permutación internamente antes de Conv1d.
+        tensor_x = torch.from_numpy(ventana_arr).unsqueeze(0)
 
         with torch.no_grad():
             cambios_escalados = modelo(tensor_x).cpu().numpy()
