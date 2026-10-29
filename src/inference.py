@@ -293,8 +293,17 @@ class ModeloSARIMAX:
         for estacion in ESTACIONES:
             ruta_est = carpeta_sarimax / f"{estacion}.joblib"
             exog, _ = preparar_exogenas(anomalias, estacion, rezago=14)
-            anom_obj = anomalias[estacion].iloc[14:]
-            exog_obj = exog.iloc[14:]
+            # `preparar_exogenas` ya descarta el periodo inicial del rezago.
+            # Alinear por fecha evita que una segunda selección posicional
+            # desplace o reduzca solo una de las dos series.
+            anom_obj = anomalias[estacion].reindex(exog.index)
+            exog_obj = exog.reindex(anom_obj.index)
+            validos = anom_obj.notna() & exog_obj.notna().all(axis=1)
+            anom_obj = anom_obj.loc[validos]
+            exog_obj = exog_obj.loc[validos]
+            en_train = anom_obj.index < self.inicio_holdout
+            anom_obj = anom_obj.loc[en_train]
+            exog_obj = exog_obj.loc[en_train]
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", (ConvergenceWarning, UserWarning))
@@ -493,7 +502,10 @@ class ModeloRedNeuronal:
             y_train = torch.from_numpy(datos_v["cambios_escalados"][datos_v["en_train"]])
 
             torch.manual_seed(SEMILLA)
-            modelo = self.clase_red(60, num_canales=len(datos_v["canales"]), maximo_horizonte=horizonte_maximo)
+            modelo = self.clase_red(
+                numero_canales=len(datos_v["canales"]),
+                numero_salidas=horizonte_maximo,
+            )
             optimizador = torch.optim.Adam(modelo.parameters(), lr=TASA_APRENDIZAJE, weight_decay=1e-4)
             criterio = torch.nn.MSELoss()
 
@@ -528,7 +540,10 @@ class ModeloRedNeuronal:
             ruta_meta = carpeta_especifica / f"{estacion}_meta.joblib"
             if ruta_pt.exists() and ruta_meta.exists():
                 meta = joblib.load(ruta_meta)
-                modelo = self.clase_red(60, num_canales=len(meta["canales"]), maximo_horizonte=horizonte_maximo)
+                modelo = self.clase_red(
+                    numero_canales=len(meta["canales"]),
+                    numero_salidas=horizonte_maximo,
+                )
                 modelo.load_state_dict(torch.load(ruta_pt, weights_only=True))
                 modelo.eval()
                 self.modelos_estacion[estacion] = {"modelo": modelo, "meta": meta}

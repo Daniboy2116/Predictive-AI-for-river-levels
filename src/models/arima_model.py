@@ -104,7 +104,13 @@ def ejecutar_sarimax(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
     anomalias = calcular_anomalias(niveles, climatologias)
     exogenas, exogenas_extendidas = preparar_exogenas(anomalias, estacion, REZAGO_EXOGENAS)
     
-    anomalia_objetivo = anomalias[estacion].iloc[REZAGO_EXOGENAS:]
+    # Las exógenas ya están recortadas al primer día disponible tras el
+    # rezago; el objetivo debe compartir exactamente ese índice temporal.
+    anomalia_objetivo = anomalias[estacion].reindex(exogenas.index)
+    exogenas = exogenas.reindex(anomalia_objetivo.index)
+    validos = anomalia_objetivo.notna() & exogenas.notna().all(axis=1)
+    anomalia_objetivo = anomalia_objetivo.loc[validos]
+    exogenas = exogenas.loc[validos]
     en_train = anomalia_objetivo.index <= pd.Timestamp(FECHA_FIN_TRAIN)
 
     valor_p_adf = adfuller(anomalia_objetivo[en_train].to_numpy(), maxlag=30, result_object=True).pvalue

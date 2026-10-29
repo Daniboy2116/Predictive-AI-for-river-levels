@@ -12,6 +12,7 @@ from src.preprocessing import (
     ajustar_climatologias, cambio_a_nivel, cargar_datos, construir_tabla, corregir_cambios_de_referencia,
     grupos_de_variables, leer_excel, nombres_variables, preparar_datos, preparar_ventanas, revisar_calidad,
 )
+from src.models.arima_model import calcular_anomalias, preparar_exogenas
 
 # Los datos reales (data/niveles_reales.xlsx) se cargan una sola vez para todas las pruebas
 CRUDOS = leer_excel()
@@ -77,12 +78,23 @@ def test_sin_fuga_de_informacion_futura():
     climatologias_alteradas = ajustar_climatologias(alterados, OBSERVADOS)
     for estacion in ESTACIONES:
         assert np.allclose(climatologias_originales[estacion], climatologias_alteradas[estacion])
-
     tabla_original = construir_tabla(NIVELES, OBSERVADOS, climatologias_originales, "Ciudad_Bolivar", 15)
     tabla_alterada = construir_tabla(alterados, OBSERVADOS, climatologias_alteradas, "Ciudad_Bolivar", 15)
     variables = nombres_variables(tabla_original)
     hasta_t0 = tabla_original.index <= t0
     pd.testing.assert_frame_equal(tabla_original.loc[hasta_t0, variables], tabla_alterada.loc[hasta_t0, variables])
+
+
+def test_exogenas_arima_y_objetivo_comparten_fechas():
+    """Las exógenas con rezago deben quedar alineadas con el objetivo."""
+    climatologias = ajustar_climatologias(NIVELES, OBSERVADOS)
+    anomalias = calcular_anomalias(NIVELES, climatologias)
+
+    for estacion in ESTACIONES:
+        exogenas, _ = preparar_exogenas(anomalias, estacion, rezago=14)
+        objetivo = anomalias[estacion].reindex(exogenas.index)
+        assert len(objetivo) == len(exogenas)
+        assert objetivo.index.equals(exogenas.index)
 
 
 def test_split_por_fecha_objetivo():
