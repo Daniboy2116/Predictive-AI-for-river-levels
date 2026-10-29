@@ -15,7 +15,7 @@ import pytest
 
 from src.configuracion import (
     ESTACIONES, ESTACIONES_OBJETIVO, HORIZONTE_BACKTEST,
-    calcular_corte_holdout, obtener_rango_holdout,
+    calcular_corte_holdout, calcular_cortes_backtest, obtener_rango_holdout,
 )
 from src.backtesting import (
     BacktestValidationError, calcular_metricas_evento, clasificar_temporada,
@@ -40,6 +40,22 @@ def test_split_holdout_cronologico_sin_mezcla():
     assert fechas_train.max() < fechas_holdout.min()
     assert (fechas_train.sort_values() == fechas_train).all()
     assert (fechas_holdout.sort_values() == fechas_holdout).all()
+
+
+def test_split_backtest_70_15_15():
+    """La partición del simulador debe separar train, validación y prueba."""
+    inicio_validacion, inicio_prueba = calcular_cortes_backtest(NIVELES.index)
+    fechas_train = NIVELES.index[NIVELES.index < inicio_validacion]
+    fechas_validacion = NIVELES.index[
+        (NIVELES.index >= inicio_validacion) & (NIVELES.index < inicio_prueba)
+    ]
+    fechas_prueba = NIVELES.index[NIVELES.index >= inicio_prueba]
+
+    assert fechas_train.max() < fechas_validacion.min()
+    assert fechas_validacion.max() < fechas_prueba.min()
+    assert abs(len(fechas_train) / len(NIVELES) - 0.70) < 0.01
+    assert abs(len(fechas_validacion) / len(NIVELES) - 0.15) < 0.01
+    assert abs(len(fechas_prueba) / len(NIVELES) - 0.15) < 0.01
 
 
 def test_sin_fuga_de_informacion_futura_en_backtest():
@@ -68,7 +84,7 @@ def test_validacion_de_fechas_rechaza_casos_invalidos():
     """Debe rechazar fechas anteriores al holdout, demasiado cercanas al final o con lookback insuficiente."""
     # 1. Fecha anterior al holdout
     fecha_previa = INICIO_HOLDOUT - pd.Timedelta(days=5)
-    with pytest.raises(BacktestValidationError, match="anterior al inicio del holdout"):
+    with pytest.raises(BacktestValidationError, match="anterior al inicio de prueba"):
         validar_fecha_origen(fecha_previa, INICIO_HOLDOUT, FIN_HOLDOUT, horizonte_maximo=14)
 
     # 2. Fecha con menos de 14 días antes del fin del holdout
@@ -143,4 +159,3 @@ def test_simulacion_evento_estructura_y_coherencia():
     historia = resultado["historia"]
     assert historia["Fecha"].min() == t0 - pd.Timedelta(days=60)
     assert historia["Fecha"].max() == t0
-

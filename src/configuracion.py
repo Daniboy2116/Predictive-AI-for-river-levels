@@ -1,6 +1,7 @@
 """Configuración central del proyecto: rutas, estaciones, horizontes y fechas de corte."""
 from pathlib import Path
 import pandas as pd
+import numpy as np
 
 CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
 # Serie auditada (data/auditoria/INFORME_AUDITORIA.md): hojas por estación de "DATOS RIO ORINOCO.xlsx",
@@ -63,9 +64,11 @@ VENTANAS_MEDIA_MOVIL = [7, 30]
 # Configuración del Backtesting Interactivo
 # --------------------------------------------------------------------------
 PORCENTAJE_TRAIN_BACKTEST = 0.70
+PORCENTAJE_VALIDACION_BACKTEST = 0.15
+PORCENTAJE_PRUEBA_BACKTEST = 0.15
 HORIZONTE_BACKTEST = 14
 LOOKBACKS_BACKTEST = [30, 60, 90]
-MODO_PARTICION_BACKTEST = "porcentaje"  # Opciones: "porcentaje", "fechas_actuales"
+MODO_PARTICION_BACKTEST = "porcentaje"  # El simulador usa estrictamente 70/15/15.
 
 TEMPORADAS_HIDROLOGICAS = [
     {
@@ -103,10 +106,7 @@ def calcular_corte_holdout(
     fechas: pd.DatetimeIndex,
     porcentaje_train: float = PORCENTAJE_TRAIN_BACKTEST,
 ) -> pd.Timestamp:
-    """Calcula el corte cronológico del train/holdout (por defecto 70/30) sin mezclar aleatoriamente.
-
-    El 70% inicial temporal corresponde a entrenamiento y el 30% final al holdout.
-    """
+    """Calcula un corte cronológico simple para compatibilidad con utilidades antiguas."""
     fechas_ordenadas = pd.DatetimeIndex(fechas).sort_values().drop_duplicates()
     if len(fechas_ordenadas) == 0:
         raise ValueError("El índice de fechas está vacío.")
@@ -115,26 +115,54 @@ def calcular_corte_holdout(
     return fechas_ordenadas[indice_corte]
 
 
-def obtener_rango_holdout(
+def calcular_cortes_backtest(
+    fechas: pd.DatetimeIndex,
+    porcentaje_train: float = PORCENTAJE_TRAIN_BACKTEST,
+    porcentaje_validacion: float = PORCENTAJE_VALIDACION_BACKTEST,
+    porcentaje_prueba: float = PORCENTAJE_PRUEBA_BACKTEST,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Calcula los inicios de validación y prueba con una partición cronológica 70/15/15."""
+    suma_porcentajes = porcentaje_train + porcentaje_validacion + porcentaje_prueba
+    if not np.isclose(suma_porcentajes, 1.0):
+        raise ValueError("Los porcentajes de train, validación y prueba deben sumar 1.")
+
+    fechas_ordenadas = pd.DatetimeIndex(fechas).sort_values().drop_duplicates()
+    if len(fechas_ordenadas) < 3:
+        raise ValueError("Se necesitan al menos tres fechas para crear la partición 70/15/15.")
+
+    indice_validacion = max(1, int(len(fechas_ordenadas) * porcentaje_train))
+    indice_prueba = max(
+        indice_validacion + 1,
+        int(len(fechas_ordenadas) * (porcentaje_train + porcentaje_validacion)),
+    )
+    indice_prueba = min(indice_prueba, len(fechas_ordenadas) - 1)
+    return fechas_ordenadas[indice_validacion], fechas_ordenadas[indice_prueba]
+
+
+def obtener_rangos_particion(
     niveles: pd.DataFrame,
     observados: pd.DataFrame,
     modo: str = MODO_PARTICION_BACKTEST,
-    porcentaje_train: float = PORCENTAJE_TRAIN_BACKTEST,
-) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Devuelve el inicio y fin válidos del conjunto holdout para backtesting.
-
-    El cálculo se realiza preferentemente sobre las fechas comunes observadas en las cuatro estaciones.
-    """
-    if modo == "fechas_actuales":
-        inicio = pd.Timestamp(FECHA_FIN_VAL) + pd.Timedelta(days=1)
-        fin = niveles.index.max()
-        return inicio, fin
+) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]:
+    """Devuelve inicio de validación, inicio de prueba y fin de una partición 70/15/15."""
+    if modo != "porcentaje":
+        raise ValueError("El simulador interactivo solo admite la partición porcentual 70/15/15.")
 
     fechas_comunes = observados.all(axis=1)
     fechas_validas = niveles.index[fechas_comunes]
     if len(fechas_validas) == 0:
         fechas_validas = niveles.index
 
-    inicio = calcular_corte_holdout(fechas_validas, porcentaje_train)
-    fin = niveles.index.max()
-    return inicio, fin
+    inicio_validacion, inicio_prueba = calcular_cortes_backtest(fechas_validas)
+    return inicio_validacion, inicio_prueba, niveles.index.max()
+
+
+def obtener_rango_holdout(
+    niveles: pd.DataFrame,
+    observados: pd.DataFrame,
+    modo: str = MODO_PARTICION_BACKTEST,
+    porcentaje_train: float = PORCENTAJE_TRAIN_BACKTEST,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Devuelve el rango de prueba (último 15 %) del simulador 70/15/15."""
+    _, inicio_prueba, fin_prueba = obtener_rangos_particion(niveles, observados, modo)
+    return inicio_prueba, fin_prueba

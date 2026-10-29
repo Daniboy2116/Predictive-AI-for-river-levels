@@ -11,7 +11,7 @@ from sklearn.metrics import r2_score
 
 from src.configuracion import (
     CARPETA_SALIDA, ESTACIONES, ESTACIONES_OBJETIVO, HORIZONTE_BACKTEST,
-    MODO_PARTICION_BACKTEST, TEMPORADAS_HIDROLOGICAS, obtener_rango_holdout,
+    MODO_PARTICION_BACKTEST, TEMPORADAS_HIDROLOGICAS, obtener_rangos_particion,
 )
 from src.inference import REGISTRO_MODELOS, obtener_modelo_backtest
 from src.preprocessing import cargar_datos
@@ -64,20 +64,20 @@ def validar_fecha_origen(
     observados: Optional[pd.DataFrame] = None,
     estaciones: Optional[List[str]] = None,
 ) -> None:
-    """Valida estrictamente que t0 y su horizonte futuro de 14 días pertenezcan al conjunto holdout."""
+    """Valida que t0 y su horizonte futuro pertenezcan al conjunto de prueba."""
     t0 = pd.Timestamp(fecha_origen)
     inicio_h = pd.Timestamp(inicio_holdout)
     fin_h = pd.Timestamp(fin_holdout)
 
     if t0 < inicio_h:
         raise BacktestValidationError(
-            f"La fecha de origen seleccionada ({t0.strftime('%Y-%m-%d')}) es anterior al inicio del holdout ({inicio_h.strftime('%Y-%m-%d')})."
+            f"La fecha de origen seleccionada ({t0.strftime('%Y-%m-%d')}) es anterior al inicio de prueba ({inicio_h.strftime('%Y-%m-%d')})."
         )
 
     ultimo_origen_valido = fin_h - pd.Timedelta(days=horizonte_maximo)
     if t0 > ultimo_origen_valido:
         raise BacktestValidationError(
-            f"La fecha de origen ({t0.strftime('%Y-%m-%d')}) no cuenta con {horizonte_maximo} días posteriores dentro del holdout. "
+            f"La fecha de origen ({t0.strftime('%Y-%m-%d')}) no cuenta con {horizonte_maximo} días posteriores dentro de prueba. "
             f"El último origen válido permitido es {ultimo_origen_valido.strftime('%Y-%m-%d')}."
         )
 
@@ -164,6 +164,7 @@ def simular_evento(
     horizonte_maximo: int = HORIZONTE_BACKTEST,
     modo_split: str = MODO_PARTICION_BACKTEST,
     inicio_holdout: Optional[pd.Timestamp] = None,
+    inicio_prueba: Optional[pd.Timestamp] = None,
     guardar_en_disco: bool = True,
 ) -> dict:
     """Ejecuta una simulación histórica completa de 1 a horizonte_maximo días para uno o varios modelos."""
@@ -174,9 +175,12 @@ def simular_evento(
         estaciones = [estaciones]
 
     if inicio_holdout is None:
-        inicio_h, fin_h = obtener_rango_holdout(niveles, observados, modo=modo_split)
+        inicio_train, inicio_h, fin_h = obtener_rangos_particion(
+            niveles, observados, modo=modo_split,
+        )
     else:
-        inicio_h = pd.Timestamp(inicio_holdout)
+        inicio_train = pd.Timestamp(inicio_holdout)
+        inicio_h = pd.Timestamp(inicio_prueba) if inicio_prueba is not None else inicio_train
         fin_h = niveles.index.max()
 
     validar_fecha_origen(
@@ -197,7 +201,7 @@ def simular_evento(
 
     # Instanciar o recuperar todos los modelos solicitados
     modelos_instancias = {
-        m_nom: obtener_modelo_backtest(m_nom, niveles, observados, inicio_h, horizonte_maximo)
+        m_nom: obtener_modelo_backtest(m_nom, niveles, observados, inicio_train, horizonte_maximo)
         for m_nom in modelos_lista
     }
 

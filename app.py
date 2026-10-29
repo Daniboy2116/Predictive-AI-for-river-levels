@@ -16,8 +16,10 @@ from src.configuracion import (
     MODO_PARTICION_BACKTEST,
     NOMBRES_ESTACIONES,
     PORCENTAJE_TRAIN_BACKTEST,
+    PORCENTAJE_VALIDACION_BACKTEST,
+    PORCENTAJE_PRUEBA_BACKTEST,
     UMBRALES_ALERTA,
-    obtener_rango_holdout,
+    obtener_rangos_particion,
 )
 from src.inference import REGISTRO_MODELOS
 
@@ -218,10 +220,11 @@ def construir_grafica_historica(
     niveles: pd.DataFrame,
     observados: pd.DataFrame,
     estacion_sel: str,
-    inicio_holdout: pd.Timestamp,
-    fin_holdout: pd.Timestamp,
+    inicio_validacion: pd.Timestamp,
+    inicio_prueba: pd.Timestamp,
+    fin_prueba: pd.Timestamp,
 ) -> go.Figure:
-    """Construye la gráfica de series históricas delimitando con precisión el corte train/holdout."""
+    """Construye la gráfica de series históricas con la partición 70/15/15."""
     fig = go.Figure()
 
     if estacion_sel == "Todas las estaciones":
@@ -243,8 +246,7 @@ def construir_grafica_historica(
         col = COLORES_ESTACIONES.get(estacion_sel, "#38bdf8")
         nombre = NOMBRES_ESTACIONES.get(estacion_sel, estacion_sel)
 
-        # Segmento de entrenamiento (visto por los modelos)
-        mascara_train = (niveles.index < inicio_holdout) & observados[estacion_sel]
+        mascara_train = (niveles.index < inicio_validacion) & observados[estacion_sel]
         s_train = niveles.loc[mascara_train, estacion_sel]
         if not s_train.empty:
             fig.add_trace(go.Scatter(
@@ -257,14 +259,30 @@ def construir_grafica_historica(
                 hoverlabel=dict(namelength=-1),
             ))
 
-        # Segmento Holdout (estrictamente no visto durante el entrenamiento)
-        mascara_holdout = (niveles.index >= inicio_holdout) & observados[estacion_sel]
-        s_holdout = niveles.loc[mascara_holdout, estacion_sel]
-        if not s_holdout.empty:
+        mascara_validacion = (
+            (niveles.index >= inicio_validacion)
+            & (niveles.index < inicio_prueba)
+            & observados[estacion_sel]
+        )
+        s_validacion = niveles.loc[mascara_validacion, estacion_sel]
+        if not s_validacion.empty:
             fig.add_trace(go.Scatter(
-                x=s_holdout.index,
-                y=s_holdout.to_numpy(),
-                name=f"Holdout Ciego: {nombre} (30% reservado)",
+                x=s_validacion.index,
+                y=s_validacion.to_numpy(),
+                name=f"Validación: {nombre} (15% reservado)",
+                mode="lines",
+                line=dict(color="#facc15", width=1.8, dash="dot"),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
+            ))
+
+        mascara_prueba = (niveles.index >= inicio_prueba) & observados[estacion_sel]
+        s_prueba = niveles.loc[mascara_prueba, estacion_sel]
+        if not s_prueba.empty:
+            fig.add_trace(go.Scatter(
+                x=s_prueba.index,
+                y=s_prueba.to_numpy(),
+                name=f"Prueba: {nombre} (15% ciego)",
                 mode="lines",
                 line=dict(color="#94a3b8", width=1.8, dash="dot"),
                 hovertemplate="%{y:.2f} m<extra></extra>",
@@ -282,26 +300,41 @@ def construir_grafica_historica(
             )
         titulo = f"Serie Histórica Observada y Partición — {nombre}"
 
-    # Línea vertical divisoria del Holdout
     fig.add_vline(
-        x=inicio_holdout,
+        x=inicio_validacion,
         line=dict(color="#f59e0b", width=2, dash="dash"),
-        annotation_text="Línea de Partición (Inicio Holdout Ciego)",
+        annotation_text="Inicio validación",
         annotation_position="top left",
         annotation_font=dict(color="#f59e0b", size=11),
     )
-
-    # Región sombreada del Holdout
     fig.add_vrect(
-        x0=inicio_holdout,
-        x1=fin_holdout,
-        fillcolor="rgba(245, 158, 11, 0.08)",
+        x0=inicio_validacion,
+        x1=inicio_prueba,
+        fillcolor="rgba(250, 204, 21, 0.08)",
         line_width=1,
         line_dash="dot",
-        line_color="rgba(245, 158, 11, 0.4)",
-        annotation_text="Conjunto Holdout (30% reservado para Backtesting)",
+        line_color="rgba(250, 204, 21, 0.4)",
+        annotation_text="Validación (15%)",
         annotation_position="top right",
-        annotation_font=dict(size=11, color="#f59e0b"),
+        annotation_font=dict(size=11, color="#facc15"),
+    )
+    fig.add_vline(
+        x=inicio_prueba,
+        line=dict(color="#ef4444", width=2, dash="dash"),
+        annotation_text="Inicio prueba",
+        annotation_position="top left",
+        annotation_font=dict(color="#ef4444", size=11),
+    )
+    fig.add_vrect(
+        x0=inicio_prueba,
+        x1=fin_prueba,
+        fillcolor="rgba(239, 68, 68, 0.08)",
+        line_width=1,
+        line_dash="dot",
+        line_color="rgba(239, 68, 68, 0.4)",
+        annotation_text="Prueba ciega (15%)",
+        annotation_position="top right",
+        annotation_font=dict(size=11, color="#ef4444"),
     )
 
     estilo_grafica(fig, titulo, "Nivel (m)", altura=520)
@@ -531,13 +564,13 @@ st.markdown("""
 
 niveles_datos, observados_datos = obtener_datos_hidrologicos()
 
-# Rango del holdout calculado cronológicamente (70% train / 30% holdout ciego)
-inicio_holdout_calc, fin_holdout_calc = obtener_rango_holdout(
-    niveles_datos, observados_datos, modo=MODO_PARTICION_BACKTEST, porcentaje_train=PORCENTAJE_TRAIN_BACKTEST,
+# Partición cronológica estricta 70% train / 15% validación / 15% prueba.
+inicio_validacion_calc, inicio_prueba_calc, fin_prueba_calc = obtener_rangos_particion(
+    niveles_datos, observados_datos, modo=MODO_PARTICION_BACKTEST,
 )
-ultimo_origen_valido = fin_holdout_calc - pd.Timedelta(days=HORIZONTE_BACKTEST)
+ultimo_origen_valido = fin_prueba_calc - pd.Timedelta(days=HORIZONTE_BACKTEST)
 inicio_train = niveles_datos.index.min()
-fin_train = inicio_holdout_calc - pd.Timedelta(days=1)
+fin_train = inicio_validacion_calc - pd.Timedelta(days=1)
 
 opciones_estacion = ["Todas las estaciones"] + ESTACIONES
 
@@ -551,10 +584,15 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### ℹ️ Partición del Dataset")
-    modo_texto = f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST*100)}% / {int((1-PORCENTAJE_TRAIN_BACKTEST)*100)}%)" if MODO_PARTICION_BACKTEST == "porcentaje" else "Fechas Fijas"
+    modo_texto = (
+        f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST * 100)}% / "
+        f"{int(PORCENTAJE_VALIDACION_BACKTEST * 100)}% / "
+        f"{int(PORCENTAJE_PRUEBA_BACKTEST * 100)}%)"
+    )
     st.markdown(f"**Modo:** `{modo_texto}`")
     st.markdown(f"**Entrenamiento:** `{inicio_train.strftime('%d/%m/%Y')} a {fin_train.strftime('%d/%m/%Y')}`")
-    st.markdown(f"**Holdout Ciego:** `{inicio_holdout_calc.strftime('%d/%m/%Y')} a {fin_holdout_calc.strftime('%d/%m/%Y')}`")
+    st.markdown(f"**Validación:** `{inicio_validacion_calc.strftime('%d/%m/%Y')} a {(inicio_prueba_calc - pd.Timedelta(days=1)).strftime('%d/%m/%Y')}`")
+    st.markdown(f"**Prueba:** `{inicio_prueba_calc.strftime('%d/%m/%Y')} a {fin_prueba_calc.strftime('%d/%m/%Y')}`")
 
     st.markdown("---")
     st.markdown("### 🔒 Garantía Metodológica")
@@ -576,15 +614,16 @@ with pestana_historia:
     st.markdown(
         "Esta vista presenta los niveles observados en la cuenca del Río Orinoco. "
         "La partición temporal delimita los datos que los modelos conocen durante el entrenamiento y "
-        "reserva estrictamente el **30% final (Holdout)** como conjunto ciego para la evaluación interactiva."
+        "reserva estrictamente 15% para validación y 15% final como conjunto ciego de prueba."
     )
 
     fig_hist = construir_grafica_historica(
         niveles=niveles_datos,
         observados=observados_datos,
         estacion_sel=seleccion_estacion,
-        inicio_holdout=inicio_holdout_calc,
-        fin_holdout=fin_holdout_calc,
+        inicio_validacion=inicio_validacion_calc,
+        inicio_prueba=inicio_prueba_calc,
+        fin_prueba=fin_prueba_calc,
     )
     st.plotly_chart(fig_hist, width="stretch")
 
@@ -592,8 +631,8 @@ with pestana_historia:
     if seleccion_estacion == "Todas las estaciones":
         cols = st.columns(len(ESTACIONES))
         for idx, est in enumerate(ESTACIONES):
-            s_train = niveles_datos.loc[niveles_datos.index < inicio_holdout_calc, est]
-            s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_holdout_calc, est]]
+            s_train = niveles_datos.loc[niveles_datos.index < inicio_validacion_calc, est]
+            s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_validacion_calc, est]]
             pct_obs = (len(s_train_obs) / len(s_train) * 100) if len(s_train) > 0 else 0
             with cols[idx]:
                 st.markdown(f"""
@@ -605,8 +644,8 @@ with pestana_historia:
                 </div>
                 """, unsafe_allow_html=True)
     else:
-        s_train = niveles_datos.loc[niveles_datos.index < inicio_holdout_calc, seleccion_estacion]
-        s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_holdout_calc, seleccion_estacion]]
+        s_train = niveles_datos.loc[niveles_datos.index < inicio_validacion_calc, seleccion_estacion]
+        s_train_obs = s_train[observados_datos.loc[niveles_datos.index < inicio_validacion_calc, seleccion_estacion]]
         pct_obs = (len(s_train_obs) / len(s_train) * 100) if len(s_train) > 0 else 0
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -640,8 +679,8 @@ with pestana_historia:
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.info(
-        "💡 **¿Por qué no hay predicciones automáticas sobre el período Holdout en esta gráfica?**  \n"
-        "Siguiendo las mejores prácticas de ciencia de datos e hidrología operativa, el conjunto de prueba (holdout) "
+        "💡 **¿Por qué no hay predicciones automáticas sobre el período de prueba en esta gráfica?**  \n"
+        "Siguiendo las mejores prácticas de ciencia de datos e hidrología operativa, el conjunto de prueba "
         "se mantiene como un **entorno ciego inalterado**. Los modelos no ejecutan inferencia masiva continua por defecto. "
         "En su lugar, el operador decide en la pestaña **🧪 Simulador de Backtesting** qué modelo evaluar, qué ventana de memoria (lookback) "
         "asignar y en qué fecha $t_0$ emitir el pronóstico a 14 días para auditar su desempeño real."
@@ -671,21 +710,25 @@ with pestana_mapa:
 with pestana_backtest:
     st.markdown("### 🧪 Simulador Interactivo de Backtesting Histórico (1 a 14 días)")
     st.markdown(
-        "Evalúa el comportamiento de los modelos en cualquier fecha histórica $t_0$ dentro del **conjunto holdout**, "
+        "Evalúa el comportamiento de los modelos en cualquier fecha histórica $t_0$ dentro del **conjunto de prueba**, "
         "revisando la historia previa observada, el pronóstico continuo a 14 días y el nivel real registrado."
     )
 
     info_col1, info_col2 = st.columns(2)
     with info_col1:
         st.info(
-            f"📅 **Holdout disponible:** {inicio_holdout_calc.strftime('%d/%m/%Y')} a {fin_holdout_calc.strftime('%d/%m/%Y')}  \n"
+            f"📅 **Prueba disponible:** {inicio_prueba_calc.strftime('%d/%m/%Y')} a {fin_prueba_calc.strftime('%d/%m/%Y')}  \n"
             f"📍 **Último origen válido para h=14:** `{ultimo_origen_valido.strftime('%d/%m/%Y')}`"
         )
     with info_col2:
-        modo_texto = f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST*100)}% Train / {int((1-PORCENTAJE_TRAIN_BACKTEST)*100)}% Holdout)" if MODO_PARTICION_BACKTEST == "porcentaje" else "Fechas Fijas del Proyecto"
+        modo_texto = (
+            f"Porcentual ({int(PORCENTAJE_TRAIN_BACKTEST * 100)}% Train / "
+            f"{int(PORCENTAJE_VALIDACION_BACKTEST * 100)}% Validación / "
+            f"{int(PORCENTAJE_PRUEBA_BACKTEST * 100)}% Prueba)"
+        )
         st.info(
             f"⚙️ **Modo de partición:** `{modo_texto}`  \n"
-            f"🔒 **Garantía sin fuga:** Entrenamiento restringido estrictamente a $t < t_\\text{{holdout}}$."
+            f"🔒 **Garantía sin fuga:** entrenamiento restringido a 70%; validación reservada y prueba ciega."
         )
 
     with st.container():
@@ -764,11 +807,11 @@ with pestana_backtest:
             )
 
         with ctrl3:
-            fecha_def = inicio_holdout_calc + (ultimo_origen_valido - inicio_holdout_calc) / 2
+            fecha_def = inicio_prueba_calc + (ultimo_origen_valido - inicio_prueba_calc) / 2
             fecha_origen_sel = st.date_input(
                 "Fecha de origen (t₀)",
                 value=fecha_def.date(),
-                min_value=inicio_holdout_calc.date(),
+                min_value=inicio_prueba_calc.date(),
                 max_value=ultimo_origen_valido.date(),
                 key="di_fecha_origen",
             )
@@ -827,7 +870,8 @@ with pestana_backtest:
                         estaciones=estaciones_a_simular,
                         horizonte_maximo=HORIZONTE_BACKTEST,
                         modo_split=MODO_PARTICION_BACKTEST,
-                        inicio_holdout=inicio_holdout_calc,
+                        inicio_holdout=inicio_validacion_calc,
+                        inicio_prueba=inicio_prueba_calc,
                     )
                     st.session_state[clave_estado] = res_evento
                     st.success(f"✅ Simulación completada exitosamente para {n_mods} modelo{'s' if n_mods > 1 else ''}.")
