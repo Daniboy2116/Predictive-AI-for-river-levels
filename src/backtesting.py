@@ -155,18 +155,18 @@ def calcular_metricas_evento(
 
 
 def simular_evento(
-    nombre_modelo: str,
+    nombre_modelo: Union[str, List[str]],
     niveles: pd.DataFrame,
     observados: pd.DataFrame,
     fecha_origen: pd.Timestamp,
     lookback: int = 60,
-    estaciones: Optional[List[str]] = None,
+    estaciones: Optional[Union[str, List[str]]] = None,
     horizonte_maximo: int = HORIZONTE_BACKTEST,
     modo_split: str = MODO_PARTICION_BACKTEST,
     inicio_holdout: Optional[pd.Timestamp] = None,
     guardar_en_disco: bool = True,
 ) -> dict:
-    """Ejecuta una simulación histórica completa de 1 a horizonte_maximo días."""
+    """Ejecuta una simulación histórica completa de 1 a horizonte_maximo días para uno o varios modelos."""
     t0 = pd.Timestamp(fecha_origen)
     if estaciones is None:
         estaciones = ESTACIONES_OBJETIVO
@@ -191,7 +191,15 @@ def simular_evento(
     )
 
     temporada = clasificar_temporada(t0)
-    modelo = obtener_modelo_backtest(nombre_modelo, niveles, observados, inicio_h, horizonte_maximo)
+    modelos_lista = [nombre_modelo] if isinstance(nombre_modelo, str) else list(nombre_modelo)
+    if not modelos_lista:
+        raise BacktestValidationError("Debes especificar al menos un modelo para simular.")
+
+    # Instanciar o recuperar todos los modelos solicitados
+    modelos_instancias = {
+        m_nom: obtener_modelo_backtest(m_nom, niveles, observados, inicio_h, horizonte_maximo)
+        for m_nom in modelos_lista
+    }
 
     # Ventana histórica de historia previa [t0 - lookback, t0]
     inicio_historia = t0 - pd.Timedelta(days=lookback)
@@ -205,7 +213,7 @@ def simular_evento(
     fechas_futuras = [t0 + pd.Timedelta(days=h) for h in range(1, horizonte_maximo + 1)]
 
     for est in estaciones:
-        # Historia observada
+        # Historia observada (una sola vez por estación)
         for f in fechas_historia:
             obs = bool(observados.loc[f, est])
             filas_historia.append({
@@ -215,7 +223,7 @@ def simular_evento(
                 "Observado": obs,
             })
 
-        # Ground Truth futuro: no sustituir valores imputados como Ground Truth válido
+        # Ground Truth futuro (una sola vez por estación)
         for h, f in enumerate(fechas_futuras, start=1):
             obs = bool(observados.loc[f, est]) if f in observados.index else False
             val_real = float(niveles.loc[f, est]) if (obs and f in niveles.index) else np.nan
@@ -227,42 +235,42 @@ def simular_evento(
                 "Observado": obs,
             })
 
-        # Predicción del modelo
-        df_pred_est = modelo.predecir_evento(niveles, observados, t0, horizonte_maximo, est)
+        # Predicciones por cada modelo seleccionado
+        for m_nom, modelo in modelos_instancias.items():
+            df_pred_est = modelo.predecir_evento(niveles, observados, t0, horizonte_maximo, est)
+            df_pred_est["Modelo"] = m_nom
 
-        # Integrar Real, Error, ErrorAbsoluto
-        reales_serie = []
-        obs_serie = []
-        for f in df_pred_est["Fecha"]:
-            obs = bool(observados.loc[f, est]) if f in observados.index else False
-            val = float(niveles.loc[f, est]) if (obs and f in niveles.index) else np.nan
-            reales_serie.append(val)
-            obs_serie.append(obs)
+            reales_serie = []
+            obs_serie = []
+            for f in df_pred_est["Fecha"]:
+                obs = bool(observados.loc[f, est]) if f in observados.index else False
+                val = float(niveles.loc[f, est]) if (obs and f in niveles.index) else np.nan
+                reales_serie.append(val)
+                obs_serie.append(obs)
 
-        df_pred_est["Real"] = reales_serie
-        df_pred_est["Observado"] = obs_serie
+            df_pred_est["Real"] = reales_serie
+            df_pred_est["Observado"] = obs_serie
 
-        # Cálculo de errores solo para observaciones válidas
-        df_pred_est["Error"] = np.where(df_pred_est["Observado"], df_pred_est["Prediccion"] - df_pred_est["Real"], np.nan)
-        df_pred_est["ErrorAbsoluto"] = np.where(df_pred_est["Observado"], np.abs(df_pred_est["Error"]), np.nan)
+            df_pred_est["Error"] = np.where(df_pred_est["Observado"], df_pred_est["Prediccion"] - df_pred_est["Real"], np.nan)
+            df_pred_est["ErrorAbsoluto"] = np.where(df_pred_est["Observado"], np.abs(df_pred_est["Error"]), np.nan)
 
-        tablas_prediccion.append(df_pred_est)
+            tablas_prediccion.append(df_pred_est)
 
-        # Métricas de evento locales
-        met_est = calcular_metricas_evento(df_pred_est["Real"], df_pred_est["Prediccion"], df_pred_est["Observado"])
-        met_est["Estacion"] = est
-        metricas_por_estacion.append(met_est)
+            # Métricas de evento locales
+            met_est = calcular_metricas_evento(df_pred_est["Real"], df_pred_est["Prediccion"], df_pred_est["Observado"])
+            met_est["Modelo"] = m_nom
+            met_est["Estacion"] = est
+            metricas_por_estacion.append(met_est)
 
     df_predicciones = pd.concat(tablas_prediccion, ignore_index=True)
-    df_historia = pd.DataFrame(filas_historia)
-    df_gt = pd.DataFrame(filas_gt)
+    df_historia = pd.DataFrame(filas_historia).drop_duplicates(subset=["Fecha", "Estacion"])
+    df_gt = pd.DataFrame(filas_gt).drop_duplicates(subset=["Fecha", "Estacion", "Horizonte"])
     df_metricas = pd.DataFrame(metricas_por_estacion)
 
     # Persistir evento puntual en outputs/backtest_events.csv
     if guardar_en_disco:
         CARPETA_SALIDA.mkdir(parents=True, exist_ok=True)
         registro_disco = df_predicciones.copy()
-        registro_disco["Modelo"] = nombre_modelo
         registro_disco["FechaOrigen"] = t0
         registro_disco["Lookback"] = lookback
         registro_disco["Split"] = modo_split
@@ -270,7 +278,8 @@ def simular_evento(
             "Modelo", "Estacion", "FechaOrigen", "Lookback", "Horizonte",
             "Fecha", "Real", "Prediccion", "Error", "ErrorAbsoluto", "Observado", "Split",
         ]
-        registro_disco = registro_disco[columnas_orden]
+        columnas_existentes = [c for c in columnas_orden if c in registro_disco.columns]
+        registro_disco = registro_disco[columnas_existentes]
         if ARCHIVO_EVENTOS_BACKTEST.exists():
             registro_disco.to_csv(ARCHIVO_EVENTOS_BACKTEST, mode="a", header=False, index=False)
         else:
@@ -281,7 +290,8 @@ def simular_evento(
         "fecha_inicio_historia": inicio_historia,
         "fecha_fin_historia": t0,
         "temporada": temporada,
-        "modelo": nombre_modelo,
+        "modelo": ", ".join(modelos_lista) if len(modelos_lista) > 1 else modelos_lista[0],
+        "modelos": modelos_lista,
         "lookback": lookback,
         "predicciones": df_predicciones,
         "historia": df_historia,

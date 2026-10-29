@@ -301,9 +301,9 @@ def construir_grafica_evento(
     fecha_origen: pd.Timestamp,
     temporada: dict,
     nombre_est: str,
-    nombre_modelo: str,
+    nombres_modelos: Any = None,
 ) -> go.Figure:
-    """Construye la visualización interactiva del evento puntual con historia, punto de corte y predicción."""
+    """Construye la visualización interactiva del evento puntual con historia, punto de corte y predicción multimodelo."""
     fig = go.Figure()
 
     # 1. Historia previa observada
@@ -328,42 +328,72 @@ def construir_grafica_evento(
             y=gt_obs["Real"],
             name="Nivel Real (Ground Truth)",
             mode="lines+markers",
-            line=dict(color="#10b981", width=2.5),
-            marker=dict(size=6, symbol="circle"),
+            line=dict(color="#10b981", width=3),
+            marker=dict(size=7, symbol="circle"),
             hovertemplate="%{y:.2f} m<extra></extra>",
             hoverlabel=dict(namelength=-1),
         ))
 
-    # 3. Predicciones del modelo
-    color_mod = COLORES_MODELOS.get(nombre_modelo, "#38bdf8")
-    pred_ord = predicciones.sort_values("Horizonte")
-    p1_6 = pred_ord[pred_ord["Horizonte"] <= 6]
-    p7_14 = pred_ord[pred_ord["Horizonte"] >= 7]
+    # 3. Predicciones de los modelos
+    if nombres_modelos is None:
+        modelos_lista = sorted(predicciones["Modelo"].unique()) if "Modelo" in predicciones.columns else ["Modelo"]
+    elif isinstance(nombres_modelos, str):
+        modelos_lista = [nombres_modelos]
+    else:
+        modelos_lista = list(nombres_modelos)
 
-    if not p1_6.empty:
-        fig.add_trace(go.Scatter(
-            x=p1_6["Fecha"],
-            y=p1_6["Prediccion"],
-            name=f"Pronóstico {nombre_modelo} (h=1..6)",
-            mode="lines+markers",
-            line=dict(color=color_mod, width=2, dash="solid"),
-            marker=dict(size=6),
-            hovertemplate="%{y:.2f} m<extra></extra>",
-            hoverlabel=dict(namelength=-1),
-        ))
+    es_multimodelo = len(modelos_lista) > 1
 
-    if not p7_14.empty:
-        x_destacada = pd.concat([p1_6.tail(1), p7_14]) if not p1_6.empty else p7_14
-        fig.add_trace(go.Scatter(
-            x=x_destacada["Fecha"],
-            y=x_destacada["Prediccion"],
-            name=f"Pronóstico {nombre_modelo} (h=7..14 Prioritario)",
-            mode="lines+markers",
-            line=dict(color=color_mod, width=3.5, dash="solid"),
-            marker=dict(size=8, symbol="diamond"),
-            hovertemplate="%{y:.2f} m<extra></extra>",
-            hoverlabel=dict(namelength=-1),
-        ))
+    for mod in modelos_lista:
+        if "Modelo" in predicciones.columns:
+            sub_pred = predicciones[predicciones["Modelo"] == mod].sort_values("Horizonte")
+        else:
+            sub_pred = predicciones.sort_values("Horizonte")
+
+        if sub_pred.empty:
+            continue
+
+        color_mod = COLORES_MODELOS.get(mod, "#38bdf8")
+
+        if not es_multimodelo:
+            p1_6 = sub_pred[sub_pred["Horizonte"] <= 6]
+            p7_14 = sub_pred[sub_pred["Horizonte"] >= 7]
+
+            if not p1_6.empty:
+                fig.add_trace(go.Scatter(
+                    x=p1_6["Fecha"],
+                    y=p1_6["Prediccion"],
+                    name=f"Pronóstico {mod} (h=1..6)",
+                    mode="lines+markers",
+                    line=dict(color=color_mod, width=2, dash="solid"),
+                    marker=dict(size=6),
+                    hovertemplate="%{y:.2f} m<extra></extra>",
+                    hoverlabel=dict(namelength=-1),
+                ))
+
+            if not p7_14.empty:
+                x_destacada = pd.concat([p1_6.tail(1), p7_14]) if not p1_6.empty else p7_14
+                fig.add_trace(go.Scatter(
+                    x=x_destacada["Fecha"],
+                    y=x_destacada["Prediccion"],
+                    name=f"Pronóstico {mod} (h=7..14 Prioritario)",
+                    mode="lines+markers",
+                    line=dict(color=color_mod, width=3.5, dash="solid"),
+                    marker=dict(size=8, symbol="diamond"),
+                    hovertemplate="%{y:.2f} m<extra></extra>",
+                    hoverlabel=dict(namelength=-1),
+                ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=sub_pred["Fecha"],
+                y=sub_pred["Prediccion"],
+                name=f"{mod}",
+                mode="lines+markers",
+                line=dict(color=color_mod, width=2.5),
+                marker=dict(size=6),
+                hovertemplate="%{y:.2f} m<extra></extra>",
+                hoverlabel=dict(namelength=-1),
+            ))
 
     # 4. Línea de origen t0
     t0_dt = pd.Timestamp(fecha_origen)
@@ -385,13 +415,27 @@ def construir_grafica_evento(
         line_width=1,
         line_dash="dot",
         line_color="rgba(56, 189, 248, 0.3)",
-        annotation_text="Inicio de evaluación prioritaria: h=7",
+        annotation_text="Ventana prioritaria h=7..14",
         annotation_position="top right",
         annotation_font=dict(size=10, color="#38bdf8"),
     )
 
-    titulo = f"Simulación Histórica: {nombre_modelo} en {NOMBRES_ESTACIONES.get(nombre_est, nombre_est)} (t₀ = {t0_dt.strftime('%d/%m/%Y')})"
-    estilo_grafica(fig, titulo, "Nivel (m)", altura=480)
+    if nombre_est in UMBRALES_ALERTA:
+        umbral = UMBRALES_ALERTA[nombre_est]
+        fig.add_hline(
+            y=umbral,
+            line=dict(color="#ef4444", dash="dash", width=1.5),
+            annotation_text=f"Alerta: {umbral:.1f} m",
+            annotation_position="bottom right",
+            annotation_font=dict(color="#ef4444", size=10),
+        )
+
+    if not es_multimodelo:
+        titulo = f"Simulación Histórica: {modelos_lista[0]} en {NOMBRES_ESTACIONES.get(nombre_est, nombre_est)} (t₀ = {t0_dt.strftime('%d/%m/%Y')})"
+    else:
+        titulo = f"Comparativa Multimodelo ({len(modelos_lista)} modelos) en {NOMBRES_ESTACIONES.get(nombre_est, nombre_est)} (t₀ = {t0_dt.strftime('%d/%m/%Y')})"
+
+    estilo_grafica(fig, titulo, "Nivel (m)", altura=500)
     return fig
 
 
@@ -502,7 +546,7 @@ with st.sidebar:
     st.caption("Cero fuga de información (*No Data Leakage*). El conjunto de prueba permanece ciego y se evalúa exclusivamente a petición del operador en el simulador.")
 
     st.markdown("---")
-    if st.button("🔄 Actualizar Datos / Caché", use_container_width=True):
+    if st.button("🔄 Actualizar Datos / Caché", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
@@ -527,7 +571,7 @@ with pestana_historia:
         inicio_holdout=inicio_holdout_calc,
         fin_holdout=fin_holdout_calc,
     )
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.plotly_chart(fig_hist, width="stretch")
 
     st.markdown("#### 📈 Resumen Estadístico del Período de Entrenamiento")
     if seleccion_estacion == "Todas las estaciones":
@@ -591,7 +635,7 @@ with pestana_historia:
 with pestana_mapa:
     st.subheader("Geolocalización de las Estaciones en la Cuenca del Río Orinoco")
     fig_mapa = construir_mapa_cuenca()
-    st.plotly_chart(fig_mapa, use_container_width=True)
+    st.plotly_chart(fig_mapa, width="stretch")
 
     st.markdown("### 📍 Detalle de las Estaciones Hidrométricas")
     c1, c2 = st.columns(2)
@@ -631,21 +675,73 @@ with pestana_backtest:
 
     with st.container():
         st.markdown("#### ⚙️ Parámetros de Simulación")
-        ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1.5, 1.5, 1.5, 1.5])
 
         modelos_backtest_disponibles = list(REGISTRO_MODELOS.keys())
-        with ctrl1:
-            modelo_btest = st.selectbox(
-                "Modelo a evaluar",
-                modelos_backtest_disponibles,
-                index=modelos_backtest_disponibles.index("Ridge") if "Ridge" in modelos_backtest_disponibles else 0,
-                key="sb_modelo_backtest",
-            )
+        modelos_default_inicio = ["Ridge", "LightGBM", "RandomForest", "Persistencia"]
+
+        # Callbacks para botones de selección rápida (se ejecutan antes de instanciar los checkboxes)
+        def _marcar_todos():
+            for m in modelos_backtest_disponibles:
+                st.session_state[f"cb_mod_{m}"] = True
+
+        def _marcar_defecto():
+            for m in modelos_backtest_disponibles:
+                st.session_state[f"cb_mod_{m}"] = (m in modelos_default_inicio)
+
+        def _desmarcar_todos():
+            for m in modelos_backtest_disponibles:
+                st.session_state[f"cb_mod_{m}"] = False
+
+        # Inicialización de estado para las casillas de cada modelo
+        for m in modelos_backtest_disponibles:
+            if f"cb_mod_{m}" not in st.session_state:
+                st.session_state[f"cb_mod_{m}"] = (m in modelos_default_inicio)
+
+        # 1. Encabezado de casillas y botones de acción rápida
+        c_head, c_acc = st.columns([2.0, 2.0])
+        with c_head:
+            st.markdown("<p style='margin:0; font-size:0.95rem; font-weight:700; color:#38bdf8;'>🔘 Casillas de Selección de Modelos</p>", unsafe_allow_html=True)
+            st.caption("Marca o desmarca directamente las casillas para agregar o quitar modelos del pronóstico.")
+        with c_acc:
+            b1, b2, b3 = st.columns(3)
+            b1.button("✅ Todos", on_click=_marcar_todos, width="stretch", key="btn_btest_all")
+            b2.button("⭐ Top 4", on_click=_marcar_defecto, width="stretch", key="btn_btest_def")
+            b3.button("🗑️ Desmarcar todo", on_click=_desmarcar_todos, width="stretch", key="btn_btest_clr")
+
+        # 2. Casillas organizadas por familias temáticas
+        grupos_modelos = {
+            "🏛️ Líneas Base & Lineal": ["Persistencia", "Climatologia", "AnomaliaAmortiguada", "Ridge"],
+            "🌲 Ensambles de Árboles": ["RandomForest", "XGBoost", "LightGBM"],
+            "📈 Estadísticos & Aditivos": ["SARIMAX", "AutoARIMA", "Prophet"],
+            "🧠 Deep Learning & FM": ["TimesFM", "LSTM", "CNN1D", "Transformer", "Ensamble"],
+        }
+
+        cols_grupos = st.columns(4)
+        for idx_g, (grupo_nombre, mods_grupo) in enumerate(grupos_modelos.items()):
+            with cols_grupos[idx_g]:
+                st.markdown(f"<p style='font-weight:600; font-size:0.84rem; color:#94a3b8; margin:4px 0 2px 0;'>{grupo_nombre}</p>", unsafe_allow_html=True)
+                for m in mods_grupo:
+                    if m in modelos_backtest_disponibles:
+                        st.checkbox(m, key=f"cb_mod_{m}")
+
+        # 3. Modelos seleccionados actuales
+        modelos_sel = [m for m in modelos_backtest_disponibles if st.session_state.get(f"cb_mod_{m}", False)]
+        n_sel = len(modelos_sel)
+
+        if not modelos_sel:
+            st.warning("⚠️ No hay ningún modelo seleccionado. Marca una o más casillas arriba para habilitar la simulación.")
+        else:
+            st.caption(f"✓ **{n_sel} modelo{'s' if n_sel != 1 else ''} activo{'s' if n_sel != 1 else ''} para la simulación:** {', '.join(modelos_sel)}")
+
+        st.markdown("<hr style='margin: 12px 0; border: none; border-top: 1px solid rgba(255,255,255,0.08);'>", unsafe_allow_html=True)
+
+        # 4. Parámetros complementarios: Estación, Fecha de corte t0, Lookback
+        ctrl2, ctrl3, ctrl4 = st.columns([1.6, 1.2, 1.2])
 
         with ctrl2:
             opciones_est_btest = ["Todas las estaciones"] + ESTACIONES
             estacion_btest = st.selectbox(
-                "Estación",
+                "Estación a evaluar",
                 opciones_est_btest,
                 index=opciones_est_btest.index("Ciudad_Bolivar"),
                 format_func=lambda e: "Todas las estaciones" if e == "Todas las estaciones" else NOMBRES_ESTACIONES.get(e, e),
@@ -663,21 +759,26 @@ with pestana_backtest:
             )
 
         with ctrl4:
-            lookbacks_permitidos = REGISTRO_MODELOS[modelo_btest]["lookbacks_soportados"]
-            lookback_val = 60 if 60 in lookbacks_permitidos else lookbacks_permitidos[0]
-            lookback_sel = st.select_slider(
-                "Ventana histórica (lookback)",
-                options=LOOKBACKS_BACKTEST,
-                value=lookback_val,
-                disabled=(len(lookbacks_permitidos) == 1),
-                key="ss_lookback",
-            )
-            if len(lookbacks_permitidos) == 1:
-                st.caption(f"ℹ️ {modelo_btest} requiere lookback fijo de {lookbacks_permitidos[0]} días.")
+            modelos_con_60 = [m for m in modelos_sel if len(REGISTRO_MODELOS[m]["lookbacks_soportados"]) == 1]
+            if modelos_con_60:
+                lookback_sel = st.select_slider(
+                    "Ventana histórica (lookback)",
+                    options=LOOKBACKS_BACKTEST,
+                    value=60,
+                    disabled=True,
+                    key="ss_lookback",
+                )
+                st.caption(f"ℹ️ {', '.join(modelos_con_60)} fija lookback a 60 d.")
+            else:
+                lookback_sel = st.select_slider(
+                    "Ventana histórica (lookback)",
+                    options=LOOKBACKS_BACKTEST,
+                    value=60,
+                    key="ss_lookback",
+                )
 
-        col_ejecutar, _ = st.columns([1.5, 4.5])
-        with col_ejecutar:
-            ejecutar_sim = st.button("🚀 Ejecutar simulación", type="primary", use_container_width=True)
+        btn_texto = "🚀 Ejecutar simulación" if len(modelos_sel) <= 1 else f"🚀 Ejecutar simulación multimodelo ({len(modelos_sel)} modelos)"
+        ejecutar_sim = st.button(btn_texto, type="primary", width="stretch", disabled=(len(modelos_sel) == 0))
 
     t0_timestamp = pd.Timestamp(fecha_origen_sel)
     info_temp = clasificar_temporada(t0_timestamp)
@@ -691,29 +792,34 @@ with pestana_backtest:
     </div>
     """, unsafe_allow_html=True)
 
-    clave_estado = f"sim_{modelo_btest}_{estacion_btest}_{t0_timestamp.strftime('%Y%m%d')}_{lookback_sel}"
+    modelos_str_clave = "_".join(sorted(modelos_sel))
+    clave_estado = f"sim_{modelos_str_clave}_{estacion_btest}_{t0_timestamp.strftime('%Y%m%d')}_{lookback_sel}"
 
     if ejecutar_sim:
-        with st.spinner(f"Entrenando/cargando {modelo_btest} y simulando evento a 14 días..."):
-            try:
-                estaciones_a_simular = ESTACIONES if estacion_btest == "Todas las estaciones" else [estacion_btest]
-                res_evento = simular_evento(
-                    nombre_modelo=modelo_btest,
-                    niveles=niveles_datos,
-                    observados=observados_datos,
-                    fecha_origen=t0_timestamp,
-                    lookback=lookback_sel,
-                    estaciones=estaciones_a_simular,
-                    horizonte_maximo=HORIZONTE_BACKTEST,
-                    modo_split=MODO_PARTICION_BACKTEST,
-                    inicio_holdout=inicio_holdout_calc,
-                )
-                st.session_state[clave_estado] = res_evento
-                st.success("✅ Simulación completada exitosamente.")
-            except BacktestValidationError as e:
-                st.error(f"❌ Error de validación: {e}")
-            except Exception as e:
-                st.error(f"❌ Error durante la simulación: {e}")
+        if not modelos_sel:
+            st.warning("⚠️ Selecciona al menos un modelo para realizar la simulación.")
+        else:
+            n_mods = len(modelos_sel)
+            with st.spinner(f"Entrenando/cargando {n_mods} modelo{'s' if n_mods > 1 else ''} ({', '.join(modelos_sel)}) y simulando evento a 14 días..."):
+                try:
+                    estaciones_a_simular = ESTACIONES if estacion_btest == "Todas las estaciones" else [estacion_btest]
+                    res_evento = simular_evento(
+                        nombre_modelo=modelos_sel,
+                        niveles=niveles_datos,
+                        observados=observados_datos,
+                        fecha_origen=t0_timestamp,
+                        lookback=lookback_sel,
+                        estaciones=estaciones_a_simular,
+                        horizonte_maximo=HORIZONTE_BACKTEST,
+                        modo_split=MODO_PARTICION_BACKTEST,
+                        inicio_holdout=inicio_holdout_calc,
+                    )
+                    st.session_state[clave_estado] = res_evento
+                    st.success(f"✅ Simulación completada exitosamente para {n_mods} modelo{'s' if n_mods > 1 else ''}.")
+                except BacktestValidationError as e:
+                    st.error(f"❌ Error de validación: {e}")
+                except Exception as e:
+                    st.error(f"❌ Error durante la simulación: {e}")
 
     if clave_estado in st.session_state:
         simulacion = st.session_state[clave_estado]
@@ -721,9 +827,11 @@ with pestana_backtest:
         df_hist = simulacion["historia"]
         df_gt = simulacion["ground_truth"]
         df_mets = simulacion["metricas"]
+        modelos_evaluados = simulacion.get("modelos", [simulacion.get("modelo")])
 
         st.markdown("---")
-        st.markdown(f"### 📊 Resultados del Evento: {modelo_btest} desde {t0_timestamp.strftime('%d/%m/%Y')}")
+        mods_titulo = ", ".join(modelos_evaluados) if len(modelos_evaluados) > 1 else modelos_evaluados[0]
+        st.markdown(f"### 📊 Resultados del Evento: {mods_titulo} desde {t0_timestamp.strftime('%d/%m/%Y')}")
 
         estaciones_simuladas = df_preds["Estacion"].unique()
 
@@ -732,51 +840,80 @@ with pestana_backtest:
             sub_preds = df_preds[df_preds["Estacion"] == est_sim]
             sub_hist = df_hist[df_hist["Estacion"] == est_sim]
             sub_gt = df_gt[df_gt["Estacion"] == est_sim]
-            sub_met = df_mets[df_mets["Estacion"] == est_sim].iloc[0]
+            sub_mets = df_mets[df_mets["Estacion"] == est_sim]
 
             st.markdown(f"#### 📍 Estación: {nombre_legible}")
 
-            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-            with mc1:
+            modelos_en_est = sub_preds["Modelo"].unique()
+
+            # Caso 1 modelo: tarjetas clásicas de resumen
+            if len(modelos_en_est) == 1:
+                sub_met = sub_mets.iloc[0]
+                mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+                with mc1:
+                    st.markdown(f"""
+                    <div class="metric-box">
+                        <h3>{sub_met['MAE']:.3f} m</h3>
+                        <p>MAE Global (1..14)</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with mc2:
+                    st.markdown(f"""
+                    <div class="metric-box">
+                        <h3>{sub_met['RMSE']:.3f} m</h3>
+                        <p>RMSE Global (1..14)</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with mc3:
+                    r2_str = f"{sub_met['R2']:.2f}" if not pd.isna(sub_met['R2']) else "N/A"
+                    st.markdown(f"""
+                    <div class="metric-box">
+                        <h3>{r2_str}</h3>
+                        <p>Coeficiente R²</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with mc4:
+                    st.markdown(f"""
+                    <div class="metric-box">
+                        <h3>{sub_met['MAE_1_6']:.3f} m</h3>
+                        <p>MAE Corto (h=1..6)</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with mc5:
+                    st.markdown(f"""
+                    <div class="metric-box">
+                        <h3>{sub_met['MAE_7_14']:.3f} m</h3>
+                        <p>MAE Prioritario (h=7..14)</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                # Caso multimodelo: podio y tabla de ranking comparativo
+                mets_ordenadas = sub_mets.sort_values("MAE").reset_index(drop=True)
+                mejor_mod = mets_ordenadas.iloc[0]
+                color_ganador = COLORES_MODELOS.get(mejor_mod["Modelo"], "#38bdf8")
+
                 st.markdown(f"""
-                <div class="metric-box">
-                    <h3>{sub_met['MAE']:.3f} m</h3>
-                    <p>MAE Global (1..14)</p>
-                </div>
-                """, unsafe_allow_html=True)
-            with mc2:
-                st.markdown(f"""
-                <div class="metric-box">
-                    <h3>{sub_met['RMSE']:.3f} m</h3>
-                    <p>RMSE Global (1..14)</p>
-                </div>
-                """, unsafe_allow_html=True)
-            with mc3:
-                r2_str = f"{sub_met['R2']:.2f}" if not pd.isna(sub_met['R2']) else "N/A"
-                st.markdown(f"""
-                <div class="metric-box">
-                    <h3>{r2_str}</h3>
-                    <p>Coeficiente R²</p>
-                </div>
-                """, unsafe_allow_html=True)
-            with mc4:
-                st.markdown(f"""
-                <div class="metric-box">
-                    <h3>{sub_met['MAE_1_6']:.3f} m</h3>
-                    <p>MAE Corto (h=1..6)</p>
-                </div>
-                """, unsafe_allow_html=True)
-            with mc5:
-                st.markdown(f"""
-                <div class="metric-box">
-                    <h3>{sub_met['MAE_7_14']:.3f} m</h3>
-                    <p>MAE Prioritario (h=7..14)</p>
+                <div style="background: rgba(16, 185, 129, 0.08); border-left: 5px solid {color_ganador}; padding: 0.8rem 1.2rem; border-radius: 10px; margin-bottom: 1rem;">
+                    <span style="font-size: 1.1rem; font-weight: 700; color: #f8fafc;">🏆 Mejor Desempeño: <span style="color: {color_ganador};">{mejor_mod['Modelo']}</span></span>
+                    <span style="color: #cbd5e1; margin-left: 1.5rem;"><b>MAE Global:</b> {mejor_mod['MAE']:.3f} m | <b>MAE Prioritario (h=7..14):</b> {mejor_mod['MAE_7_14']:.3f} m | <b>RMSE:</b> {mejor_mod['RMSE']:.3f} m</span>
                 </div>
                 """, unsafe_allow_html=True)
 
-            if sub_met.get("advertencia"):
-                st.warning(f"⚠️ {sub_met['advertencia']}")
+                tabla_ranking = mets_ordenadas[["Modelo", "MAE", "RMSE", "R2", "MAE_1_6", "MAE_7_14"]].copy()
+                tabla_ranking["Brecha vs Mejor"] = (tabla_ranking["MAE"] - mejor_mod["MAE"]).apply(lambda v: f"+{v*100:.1f} cm" if v > 0.0001 else "Líder 🥇")
 
+                st.dataframe(
+                    tabla_ranking.style.format({
+                        "MAE": "{:.3f} m",
+                        "RMSE": "{:.3f} m",
+                        "R2": "{:.2f}",
+                        "MAE_1_6": "{:.3f} m",
+                        "MAE_7_14": "{:.3f} m",
+                    }, na_rep="N/A"),
+                    width="stretch",
+                )
+
+            # GRÁFICA MULTIMODELO (TODOS LOS MODELOS EN UNA SOLA GRÁFICA)
             fig_evento = construir_grafica_evento(
                 historia=sub_hist,
                 ground_truth=sub_gt,
@@ -784,25 +921,30 @@ with pestana_backtest:
                 fecha_origen=t0_timestamp,
                 temporada=info_temp,
                 nombre_est=est_sim,
-                nombre_modelo=modelo_btest,
+                nombres_modelos=modelos_en_est,
             )
-            st.plotly_chart(fig_evento, use_container_width=True)
+            st.plotly_chart(fig_evento, width="stretch")
 
-            st.markdown("##### 📋 Detalle Diario del Pronóstico vs Real")
-            tabla_mostrar = sub_preds[[
-                "Horizonte", "Fecha", "Real", "Prediccion", "Error", "ErrorAbsoluto", "Observado",
-            ]].copy()
-            tabla_mostrar["Fecha"] = pd.to_datetime(tabla_mostrar["Fecha"]).dt.strftime("%d/%m/%Y")
+            # TABLA COMPARATIVA DIARIA
+            st.markdown("##### 📋 Comparativa Diaria: Nivel Real vs Modelos Seleccionados")
+            fechas_u = sub_preds.drop_duplicates("Horizonte").sort_values("Horizonte")
+            df_comp_diaria = pd.DataFrame({
+                "Horizonte": fechas_u["Horizonte"].values,
+                "Fecha": pd.to_datetime(fechas_u["Fecha"]).dt.strftime("%d/%m/%Y").values,
+                "Nivel Real (m)": fechas_u["Real"].values,
+            })
+            for m_nom in modelos_en_est:
+                sub_m = sub_preds[sub_preds["Modelo"] == m_nom].sort_values("Horizonte")
+                df_comp_diaria[f"Pred {m_nom} (m)"] = sub_m["Prediccion"].values
+
+            formatos_cols = {"Nivel Real (m)": "{:.3f}"}
+            for m_nom in modelos_en_est:
+                formatos_cols[f"Pred {m_nom} (m)"] = "{:.3f}"
 
             st.dataframe(
-                tabla_mostrar.style.format({
-                    "Real": "{:.3f}",
-                    "Prediccion": "{:.3f}",
-                    "Error": "{:+.3f}",
-                    "ErrorAbsoluto": "{:.3f}",
-                }, na_rep="— (No Observado)")
-                .apply(lambda row: ["background-color: rgba(56, 189, 248, 0.12)" if row["Horizonte"] >= 7 else "" for _ in row], axis=1),
-                use_container_width=True,
+                df_comp_diaria.style.format(formatos_cols, na_rep="— (No Observado)")
+                .apply(lambda row: ["background-color: rgba(56, 189, 248, 0.10)" if row["Horizonte"] >= 7 else "" for _ in row], axis=1),
+                width="stretch",
             )
             st.markdown("<br>", unsafe_allow_html=True)
     else:
