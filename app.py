@@ -679,7 +679,7 @@ with pestana_backtest:
         st.markdown("#### ⚙️ Parámetros de Simulación")
 
         modelos_backtest_disponibles = list(REGISTRO_MODELOS.keys())
-        modelos_default_inicio = ["Ridge", "LightGBM", "RandomForest", "Persistencia"]
+        modelos_default_inicio = ["Ensamble", "RandomForest", "LightGBM", "XGBoost", "Ridge", "Persistencia"]
 
         # Callbacks para botones de selección rápida (se ejecutan antes de instanciar los checkboxes)
         def _marcar_todos():
@@ -707,7 +707,7 @@ with pestana_backtest:
         with c_acc:
             b1, b2, b3 = st.columns(3)
             b1.button("✅ Todos", on_click=_marcar_todos, width="stretch", key="btn_btest_all")
-            b2.button("⭐ Top 4", on_click=_marcar_defecto, width="stretch", key="btn_btest_def")
+            b2.button("⭐ Top Modelos", on_click=_marcar_defecto, width="stretch", key="btn_btest_def")
             b3.button("🗑️ Desmarcar todo", on_click=_desmarcar_todos, width="stretch", key="btn_btest_clr")
 
         # 2. Casillas organizadas por familias temáticas
