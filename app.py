@@ -1,3 +1,5 @@
+from typing import Any, Dict, List, Optional, Union
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
