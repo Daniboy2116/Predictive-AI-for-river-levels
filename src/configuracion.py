@@ -3,13 +3,16 @@ from pathlib import Path
 import pandas as pd
 
 CARPETA_PROYECTO = Path(__file__).resolve().parent.parent
-RUTA_DATOS = CARPETA_PROYECTO / "data" / "DATOS RIO ORINOCO.xlsx"
-HOJA_DATOS = "Entrenar"
+# Serie auditada (data/auditoria/INFORME_AUDITORIA.md): hojas por estación de "DATOS RIO ORINOCO.xlsx",
+# sin imputados ni días aberrantes. No se usa la hoja "Entrenar" (Ciudad Bolívar corrida un día en 2020-2021).
+# Empieza en 2009 porque Ayacucho no tiene datos reales entre 2007-01-01 y 2008-11-30.
+RUTA_DATOS = CARPETA_PROYECTO / "data" / "niveles_reales.xlsx"
+HOJA_DATOS = "Niveles"
 COLUMNAS_EXCEL = {
-    "Puerto Ayacucho": "Ayacucho",
-    "Caicara el mini mini": "Caicara",
-    "Ciudad Bolívar": "Ciudad_Bolivar",
-    "Palúa": "Palua",
+    "Ayacucho": "Ayacucho",
+    "Caicara": "Caicara",
+    "Ciudad_Bolivar": "Ciudad_Bolivar",
+    "Palua": "Palua",
 }
 RUTA_DATOS_SIMULADOS = CARPETA_PROYECTO / "data" / "datos_rios.xlsx"
 HOJA_DATOS_SIMULADOS = "Niveles"
@@ -30,10 +33,9 @@ NOMBRES_ESTACIONES = {
 
 UMBRALES_ALERTA = {"Ciudad_Bolivar": 16.5}
 
-CAMBIOS_DE_REFERENCIA = [
-    ("Ciudad_Bolivar", "1987-05-15", -2.20),
-    ("Ciudad_Bolivar", "2019-01-01", 1.00),
-]
+# Los supuestos cambios de Ciudad Bolívar (1987-05-15 y 2019-01-01) son pulsos de 7-10 días, no escalones:
+# frente a Caicara (t-4) la diferencia anual no cambia. Ver data/auditoria/INFORME_AUDITORIA.md, anexo D.
+CAMBIOS_DE_REFERENCIA = []
 
 VECINAS_CONTROL = {
     "Ayacucho": [("Caicara", 14), ("Ciudad_Bolivar", 18)],

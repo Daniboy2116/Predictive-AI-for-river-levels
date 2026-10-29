@@ -14,7 +14,9 @@ De aguas arriba a aguas abajo: `Ayacucho`, `Caicara`, `Ciudad_Bolivar`, `Palua` 
 - Las cuatro estaciones se usan como variables de entrada.
 
 ## Datos
-- Datos reales: `data/DATOS RIO ORINOCO.xlsx`, hoja `Entrenar` (2009-01-01 a 2025-02-24; configurable en `src/configuracion.py`).
+- Datos reales: `data/niveles_reales.xlsx`, hoja `Niveles` (2009-01-01 a 2025-02-24), generado por la auditoría de `data/auditoria/`.
+  No usar la hoja `Entrenar` (Ciudad Bolívar corrida 1 día en 2020-2021) ni los archivos imputados (Ayacucho 2007-2008 es sintético).
+  Los cambios de referencia de Ciudad Bolívar 1987 y 2019 resultaron ser pulsos transitorios, no escalones permanentes.
 - `create_dummy_data.py` → `data/datos_rios.xlsx` queda solo para probar el control de calidad (saltos conocidos).
 - Columna `Fecha` diaria (1974-01-01 a 2025-12-31) + una columna numérica por estación (niveles en metros).
 - El dataset simulado reproduce lo descrito en el PDF: ciclo anual con máximo en agosto y mínimo en marzo,

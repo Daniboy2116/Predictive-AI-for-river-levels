@@ -83,8 +83,10 @@ Cada módulo de `src/models/` también se puede ejecutar solo, por ejemplo `pyth
 
 ## Usar los datos reales
 
-1. Los datos reales están en `data/DATOS RIO ORINOCO.xlsx`, hoja `Entrenar` (columna `Fecha` diaria desde 2009-01-01
-   y una columna por estación, en metros). Hoja, ruta y correspondencia de encabezados: `src/configuracion.py`
+1. Los datos reales están en `data/niveles_reales.xlsx`, hoja `Niveles` (columna `Fecha` diaria de 2009-01-01 a
+   2025-02-24 y una columna por estación, en metros). Salen de la auditoría de `data/auditoria/` (fuente: hojas por
+   estación de `DATOS RIO ORINOCO.xlsx`; sin imputados, sin días aberrantes; serie completa 1935-2025 en
+   `data/auditoria/dataset_real_1935_2025.csv`). Hoja, ruta y correspondencia de encabezados: `src/configuracion.py`
    (`RUTA_DATOS`, `HOJA_DATOS`, `COLUMNAS_EXCEL`). Las filas finales sin datos se ignoran.
 2. Ejecutar `python main.py --familias lineas_base`: el control de calidad lista los saltos detectados.
 3. Verificar cada salto confirmado con quien opera la estación y declararlo en `CAMBIOS_DE_REFERENCIA`
@@ -95,7 +97,8 @@ Cada módulo de `src/models/` también se puede ejecutar solo, por ejemplo `pyth
 
 ```
 create_dummy_data.py        # datos simulados (solo para las pruebas del control de calidad)
-data/DATOS RIO ORINOCO.xlsx # datos reales (hoja Entrenar)
+data/niveles_reales.xlsx    # datos reales auditados (hoja Niveles)
+data/auditoria/             # informe, scripts y serie real 1935-2025
 data/datos_rios.xlsx        # datos simulados
 src/configuracion.py        # estaciones, horizontes, fechas de corte, cambios de referencia
 src/preprocessing.py        # carga, control de calidad, imputación, climatología, variables, split, escalado

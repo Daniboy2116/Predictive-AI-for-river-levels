@@ -1,0 +1,45 @@
+estacion,fecha,clase,tamano_m,evidencia
+Palua,1971-04-23,a,0.58,pulso +0.58 m; vecina +0.12; residuo +0.62 a 5 d y -0.86 a 30 d
+Palua,1971-05-18,a,0.58,pulso +0.58 m; vecina +0.26; residuo +0.43 a 5 d y -0.30 a 30 d
+Palua,1972-05-01,a,1.16,pulso +1.16 m; vecina +0.30; residuo +0.27 a 5 d y -0.43 a 30 d
+Palua,1974-04-08,a,0.73,pulso +0.73 m; vecina 0.00; residuo +0.65 a 5 d y -1.02 a 30 d
+Palua,1983-05-27,a,0.51,pulso +0.51 m; vecina +0.09; residuo +0.54 a 5 d y -0.38 a 90 d
+Palua,1994-07-17,a,0.58,pulso +0.58 m; vecina +0.11; residuo +0.46 a 5 d y -0.07 a 30 d
+Palua,1997-06-28,a,0.58,pulso +0.58 m; vecina +0.10; residuo +0.63 a 5 d y +0.12 a 30 d
+Palua,2019-12-19,a,0.58,pulso +0.58 m; vecina -0.12; residuo +0.60 a 5 d y +0.35 a 30 d
+Ayacucho,1982-06-07,b,0.535,valor=49.86; anterior=49.26; siguiente=49.39; retorna al nivel previo
+Ayacucho,1983-01-02,b,-0.96,valor=41.78; anterior=42.74; siguiente=42.74; retorna al nivel previo
+Ayacucho,1989-09-17,b,0.5,valor=48.92; anterior=48.51; siguiente=48.33; retorna al nivel previo
+Ayacucho,1992-12-27,b,0.61,valor=43.99; anterior=43.51; siguiente=43.25; retorna al nivel previo
+Ayacucho,1994-04-08,b,-0.975,valor=41.02; anterior=41.88; siguiente=42.11; retorna al nivel previo
+Ayacucho,1994-12-29,b,-0.98,valor=43.08; anterior=44.17; siguiente=43.95; retorna al nivel previo
+Ayacucho,1997-01-30,b,0.9,valor=42.97; anterior=42.20; siguiente=41.94; retorna al nivel previo
+Ayacucho,2006-09-24,b,0.495,valor=48.97; anterior=48.56; siguiente=48.39; retorna al nivel previo
+Caicara,1969-01-27,b,-1.025,valor=21.32; anterior=21.76; siguiente=22.93; retorna al nivel previo
+Caicara,1969-01-28,b,1.235,valor=22.93; anterior=21.32; siguiente=22.07; retorna al nivel previo
+Caicara,1969-04-02,b,-0.45,valor=21.03; anterior=21.93; siguiente=21.03; retorna al nivel previo
+Caicara,1969-04-03,b,0.0,valor=21.03; anterior=21.03; siguiente=21.03; retorna al nivel previo
+Caicara,1969-04-04,b,0.0,valor=21.03; anterior=21.03; siguiente=21.03; retorna al nivel previo
+Caicara,1969-04-05,b,0.0,valor=21.03; anterior=21.03; siguiente=21.03; retorna al nivel previo
+Caicara,1969-04-06,b,-0.495,valor=21.03; anterior=21.03; siguiente=22.02; retorna al nivel previo
+Caicara,1969-11-29,b,-0.51,valor=26.97; anterior=27.45; siguiente=27.51; retorna al nivel previo
+Ciudad_Bolivar,1979-11-21,b,0.6,valor=11.80; anterior=11.30; siguiente=11.10; retorna al nivel previo
+Ciudad_Bolivar,1997-07-13,b,-1.015,valor=12.02; anterior=12.84; siguiente=13.23; retorna al nivel previo
+Ciudad_Bolivar,2000-01-20,b,0.52,valor=4.97; anterior=4.50; siguiente=4.40; retorna al nivel previo
+Palua,1949-05-11,b,0.5,valor=3.83; anterior=3.13; siguiente=3.53; retorna al nivel previo
+Palua,1970-07-10,b,-0.445,valor=8.63; anterior=9.02; siguiente=9.13; retorna al nivel previo
+Palua,1971-04-27,b,-0.52,valor=2.45; anterior=2.95; siguiente=2.99; retorna al nivel previo
+Palua,1972-03-03,b,0.43,valor=2.50; anterior=1.97; siguiente=2.17; retorna al nivel previo
+Palua,1972-03-20,b,0.47,valor=2.64; anterior=2.02; siguiente=2.32; retorna al nivel previo
+Palua,1974-02-04,b,0.575,valor=2.45; anterior=1.79; siguiente=1.96; retorna al nivel previo
+Palua,1975-07-25,b,0.505,valor=9.67; anterior=9.18; siguiente=9.15; retorna al nivel previo
+Palua,1988-12-02,b,0.52,valor=8.20; anterior=7.75; siguiente=7.61; retorna al nivel previo
+Palua,2021-10-29,b,0.995,valor=9.79; anterior=8.73; siguiente=8.86; retorna al nivel previo
+Ayacucho,1986-10-01,c,-1.1,Ayacucho: -1.10 m; vecina (CB+18) 0.00; escalón no replicado; no persiste al año
+Ayacucho,2020-06-20,c,0.84,Ayacucho: +0.84 m; vecina (CB+18) +0.14; salto aislado no replicado; no persiste al año
+Caicara,1987-01-01,c,-1.02,Caicara: -1.02 m; vecina (CB+4) -0.19; escalón no replicado; no persiste al año
+Ciudad_Bolivar,1987-05-15,c,-2.2,Ciudad_Bolivar: -2.20 m exactos; Palúa +0.12; cambio de referencia conocido
+Ciudad_Bolivar,2000-11-17,c,-0.56,Ciudad_Bolivar: -0.56 m; Palúa +0.20; escalón no replicado; no persiste al año
+Ciudad_Bolivar,2019-01-01,c,1.0,Ciudad_Bolivar: +1.00 m exactos; Palúa -0.18; cambio de referencia conocido
+Ciudad_Bolivar,2019-01-11,c,-0.545,Ciudad_Bolivar: -0.54 m; forma parte de la recuperación del escalón de 2019-01-01
+Palua,1972-04-04,c,-0.94,Palúa: -0.94 m; CB -0.01; escalón no replicado; se recupera en meses

@@ -9,18 +9,19 @@ from src.configuracion import (
     ESTACIONES, FECHA_FIN_TRAIN, FECHA_FIN_VAL, HOJA_DATOS_SIMULADOS, RUTA_DATOS_SIMULADOS,
 )
 from src.preprocessing import (
-    ajustar_climatologias, cambio_a_nivel, cargar_datos, construir_tabla, grupos_de_variables, leer_excel,
-    nombres_variables, preparar_datos, preparar_ventanas, revisar_calidad,
+    ajustar_climatologias, cambio_a_nivel, cargar_datos, construir_tabla, corregir_cambios_de_referencia,
+    grupos_de_variables, leer_excel, nombres_variables, preparar_datos, preparar_ventanas, revisar_calidad,
 )
 
-# Los datos reales (hoja Entrenar) se cargan una sola vez para todas las pruebas
+# Los datos reales (data/niveles_reales.xlsx) se cargan una sola vez para todas las pruebas
 CRUDOS = leer_excel()
 NIVELES, OBSERVADOS = cargar_datos()
 
 # El control de calidad se prueba con el dataset simulado, cuyos saltos conocemos
 COLUMNAS_SIMULADAS = {estacion: estacion for estacion in ESTACIONES}
 SIMULADOS = leer_excel(RUTA_DATOS_SIMULADOS, HOJA_DATOS_SIMULADOS, COLUMNAS_SIMULADAS)
-NIVELES_SIMULADOS, OBSERVADOS_SIMULADOS = cargar_datos(RUTA_DATOS_SIMULADOS, HOJA_DATOS_SIMULADOS, COLUMNAS_SIMULADAS)
+# Saltos que create_dummy_data.py mete en Ciudad Bolívar (en los datos reales no hay ninguno confirmado)
+CAMBIOS_SIMULADOS = [("Ciudad_Bolivar", "1987-05-15", -2.20), ("Ciudad_Bolivar", "2019-01-01", 1.00)]
 
 
 def test_indice_diario_continuo():
@@ -53,7 +54,7 @@ def test_control_de_calidad_detecta_los_saltos_simulados():
 
 def test_correccion_elimina_los_saltos():
     """Después de corregir no queda ningún salto confirmado."""
-    corregidos_sin_imputar = NIVELES_SIMULADOS.where(OBSERVADOS_SIMULADOS)
+    corregidos_sin_imputar = corregir_cambios_de_referencia(SIMULADOS, CAMBIOS_SIMULADOS)
     revision = revisar_calidad(corregidos_sin_imputar)
     assert not revision["Confirmado"].any()
 
