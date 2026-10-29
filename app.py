@@ -149,6 +149,19 @@ section[data-testid="stSidebar"] {
     min-width: 0;
     overflow: visible;
 }
+.model-label {
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-left: 5px solid #38bdf8;
+    border-radius: 10px;
+    padding: 0.65rem 0.9rem;
+    margin-bottom: 0.8rem;
+    color: #f8fafc;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
 .metric-box h3 {
     margin: 0;
     font-size: 1.35rem;
@@ -326,11 +339,11 @@ def construir_grafica_evento(
         fig.add_trace(go.Scatter(
             x=gt_obs["Fecha"],
             y=gt_obs["Real"],
-            name="Nivel Real (Ground Truth)",
+            name="MEDICIONES REALES (Ground Truth)",
             mode="lines+markers",
-            line=dict(color="#10b981", width=3),
-            marker=dict(size=7, symbol="circle"),
-            hovertemplate="%{y:.2f} m<extra></extra>",
+            line=dict(color="#f8fafc", width=4.5, dash="dashdot"),
+            marker=dict(size=9, symbol="diamond", color="#f8fafc", line=dict(color="#0f172a", width=2)),
+            hovertemplate="<b>MEDICIÓN REAL</b><br>%{y:.2f} m<extra></extra>",
             hoverlabel=dict(namelength=-1),
         ))
 
@@ -849,6 +862,13 @@ with pestana_backtest:
             # Caso 1 modelo: tarjetas clásicas de resumen
             if len(modelos_en_est) == 1:
                 sub_met = sub_mets.iloc[0]
+                modelo_nombre = str(sub_met["Modelo"])
+                color_modelo = COLORES_MODELOS.get(modelo_nombre, "#38bdf8")
+                st.markdown(f"""
+                <div class="model-label" style="border-left-color: {color_modelo};">
+                    Modelo evaluado: <span style="color: {color_modelo};">{modelo_nombre}</span>
+                </div>
+                """, unsafe_allow_html=True)
                 mc1, mc2, mc3, mc4, mc5 = st.columns(5)
                 with mc1:
                     st.markdown(f"""
