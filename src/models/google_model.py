@@ -22,6 +22,7 @@ for _estacion in ESTACIONES:
 
 LONGITUD_CONTEXTO_TIMESFM = 128
 MAXIMO_HORIZONTE_TIMESFM = 15
+REPOSITORIO_TIMESFM = "google/timesfm-2.5-200m-pytorch"
 
 
 def tabla_prophet(tabla: pd.DataFrame) -> pd.DataFrame:
@@ -103,15 +104,7 @@ def ejecutar_timesfm(niveles: pd.DataFrame, observados: pd.DataFrame, estacion: 
         serie_contexto = niveles[estacion].iloc[inicio:posicion + 1].to_numpy(dtype=np.float32)
         ventanas_contexto.append(serie_contexto)
 
-    modelo = TimesFM_2p5_200M_torch(torch_compile=False)
-    configuracion = ForecastConfig(
-        max_context=LONGITUD_CONTEXTO_TIMESFM,
-        max_horizon=MAXIMO_HORIZONTE_TIMESFM,
-        per_core_batch_size=32,
-        normalize_inputs=True,
-    )
-    modelo.compile(configuracion)
-
+    modelo = obtener_modelo_timesfm()
     pronosticos_matriz, _ = modelo.forecast(horizon=MAXIMO_HORIZONTE_TIMESFM, inputs=ventanas_contexto)
     pronosticos_df = pd.DataFrame(
         pronosticos_matriz,
@@ -147,7 +140,9 @@ def obtener_modelo_timesfm(horizonte_maximo: int = MAXIMO_HORIZONTE_TIMESFM) -> 
     """Retorna una instancia compilada de TimesFM_2p5_200M_torch con reutilización en memoria."""
     global _MODELO_TIMESFM_CACHE
     if _MODELO_TIMESFM_CACHE is None:
-        modelo = TimesFM_2p5_200M_torch(torch_compile=False)
+        # El constructor solo crea la red con pesos aleatorios: los pesos preentrenados
+        # de Google se descargan de Hugging Face (~1 GB la primera vez, luego quedan en caché).
+        modelo = TimesFM_2p5_200M_torch.from_pretrained(REPOSITORIO_TIMESFM, torch_compile=False)
         configuracion = ForecastConfig(
             max_context=LONGITUD_CONTEXTO_TIMESFM,
             max_horizon=max(horizonte_maximo, MAXIMO_HORIZONTE_TIMESFM),
@@ -181,6 +176,13 @@ def ejecutar() -> None:
     niveles, observados = cargar_datos()
     for estacion in ESTACIONES_OBJETIVO:
         ejecutar_prophet(niveles, observados, estacion)
+
+
+def ejecutar_timesfm_estaciones() -> None:
+    """Evalúa TimesFM (sin entrenamiento, zero-shot) en todas las estaciones objetivo."""
+    niveles, observados = cargar_datos()
+    for estacion in ESTACIONES_OBJETIVO:
+        ejecutar_timesfm(niveles, observados, estacion)
 
 
 if __name__ == "__main__":

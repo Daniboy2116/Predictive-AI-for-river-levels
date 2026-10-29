@@ -11,10 +11,9 @@ FAMILIAS = {
     "lineas_base": linea_base.ejecutar,
     "lineal": lineal_model.ejecutar,
     "arboles": tree_models.ejecutar,
-    "arima": arima_model.ejecutar,
-    "sarimax": arima_model.ejecutar,
-    "timesfm": google_model.ejecutar_timesfm,
-    "prophet": google_model.ejecutar_prophet,
+    "arima": arima_model.ejecutar,          # AutoARIMA y SARIMAX
+    "timesfm": google_model.ejecutar_timesfm_estaciones,
+    "prophet": google_model.ejecutar,
     "redes": neural_models.ejecutar,
     "ensamble": ensamble.ejecutar,
     "contribucion": contribucion.ejecutar,
